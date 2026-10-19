@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GazeFollower Mobile</string>
+    <string name="camera_permission_required">Camera permission is required for gaze tracking.</string>
+    <string name="camera_starting">Starting front camera…</string>
+    <string name="camera_unavailable">Front camera is unavailable.</string>
+    <string name="camera_failed">Camera failed: %1$s</string>
+    <string name="camera_running">Front camera · %1$d frames · %2$.1f FPS · %3$s</string>
+    <string name="face_detected">Face · %1$d ms</string>
+    <string name="face_missing">No face · %1$d ms</string>
+    <string name="face_failed">Face detector failed: %1$s</string>
+</resources>
