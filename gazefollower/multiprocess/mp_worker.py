@@ -41,7 +41,8 @@ def create_component(comp_type, comp_kind, kwargs=None):
     return None
 
 
-def mp_worker_entry(cmd_queue, preview_queue, cali_feature_queue, gaze_queue, config_dict):
+def mp_worker_entry(cmd_queue, preview_queue, cali_feature_queue, gaze_queue,
+                    sample_stopped_event, config_dict):
     """
     Worker process entrypoint for eye tracking.
     Runs camera capture, face detection, gaze estimation, calibration, and filtering
@@ -55,7 +56,11 @@ def mp_worker_entry(cmd_queue, preview_queue, cali_feature_queue, gaze_queue, co
         'filter_beta': config_dict.get('filter_beta', 0.01),
     }
     face_alignment = create_component(config_dict.get('face_alignment_type', 'mediapipe'), 'face_alignment', fa_kwargs)
-    gaze_estimator = create_component(config_dict.get('gaze_estimator_type', 'mgazenet'), 'gaze_estimator')
+    gaze_estimator = create_component(
+        config_dict.get('gaze_estimator_type', 'mgazenet'),
+        'gaze_estimator',
+        {'model_path': config_dict.get('model_path', '')}
+    )
     calibration = create_component(config_dict.get('calibration_type', 'ridge'), 'calibration',
                                    {'alpha': config_dict.get('alpha', 0.1)})
     gaze_filter = create_component(config_dict.get('filter_type', 'heuristic'), 'filter')
@@ -113,9 +118,9 @@ def mp_worker_entry(cmd_queue, preview_queue, cali_feature_queue, gaze_queue, co
                     tmp_trig = trigger
                     trigger = 0
 
-                raw_x, raw_y = gaze_info.raw_gaze_coordinates if gaze_info.raw_gaze_coordinates is not None else (0, 0)
-                cal_x, cal_y = gaze_info.calibrated_gaze_coordinates if gaze_info.calibrated_gaze_coordinates is not None else (0, 0)
-                flt_x, flt_y = gaze_info.filtered_gaze_coordinates if gaze_info.filtered_gaze_coordinates is not None else (0, 0)
+                raw_x, raw_y = gaze_info.raw_gaze_coordinates if gaze_info.raw_gaze_coordinates is not None else (float('nan'), float('nan'))
+                cal_x, cal_y = gaze_info.calibrated_gaze_coordinates if gaze_info.calibrated_gaze_coordinates is not None else (float('nan'), float('nan'))
+                flt_x, flt_y = gaze_info.filtered_gaze_coordinates if gaze_info.filtered_gaze_coordinates is not None else (float('nan'), float('nan'))
 
                 row = (f"{gaze_info.timestamp},{raw_x},{raw_y},"
                        f"{cal_x},{cal_y},"
@@ -145,9 +150,18 @@ def mp_worker_entry(cmd_queue, preview_queue, cali_feature_queue, gaze_queue, co
             camera.stop_calibrating()
         elif cmd == 'SET_CALIBRATION_MODEL':
             cali_data = msg[1]
-            calibration.weights = cali_data.get('weights')
-            calibration.has_calibrated = cali_data.get('has_calibrated', True)
+            # Refit inside the worker.  Passing only ``weights`` worked for Ridge,
+            # but left SVR's two OpenCV models untrained while marking them as
+            # calibrated.  The calibration set is small enough to transfer once.
+            features = cali_data.get('features')
+            labels = cali_data.get('labels')
+            point_ids = cali_data.get('point_ids')
+            if features is not None and labels is not None:
+                calibration.calibrate(features, labels, point_ids)
+            else:
+                calibration.has_calibrated = False
         elif cmd == 'START_SAMPLING':
+            sample_stopped_event.clear()
             sample_path = msg[1] if len(msg) > 1 else None
             if sample_path:
                 sample_stream = open(sample_path, 'a', encoding='utf-8')
@@ -160,6 +174,7 @@ def mp_worker_entry(cmd_queue, preview_queue, cali_feature_queue, gaze_queue, co
                 except Exception:
                     pass
                 sample_stream = None
+            sample_stopped_event.set()
         elif cmd == 'SEND_TRIGGER':
             trigger = msg[1]
         elif cmd == 'TERMINATE':

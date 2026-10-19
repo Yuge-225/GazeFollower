@@ -181,7 +181,10 @@ class GazeFollower:
         self.remove_subscriber(self._write_sample)
 
     def save_data(self, path):
-        self._tmpSampleDataSteam.close()
+        if not self._tmpSampleDataSteam.closed:
+            self._tmpSampleDataSteam.flush()
+            self._tmpSampleDataSteam.close()
+        pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
         # Open the file and write the sampled data
         shutil.copyfile(str(self._tmpSampleDataPath), path)
         Log.i("save data to {}".format(path))
@@ -467,6 +470,8 @@ class GazeFollower:
 
         :return: None
         """
+        if hasattr(self, '_tmpSampleDataSteam') and not self._tmpSampleDataSteam.closed:
+            self._tmpSampleDataSteam.close()
         self.camera.close()
         self.camera.set_on_image_callback(None)
         self.camera.release()
@@ -482,9 +487,17 @@ class GazeFollower:
         right_eye_openness,tracking_status,status,event,trigger\n
         """
 
-        ret_str = (f"{gaze_info.timestamp},{gaze_info.raw_gaze_coordinates[0]},{gaze_info.raw_gaze_coordinates[1]},"
-                   f"{gaze_info.calibrated_gaze_coordinates[0]},{gaze_info.calibrated_gaze_coordinates[1]},"
-                   f"{gaze_info.filtered_gaze_coordinates[0]},{gaze_info.filtered_gaze_coordinates[1]},"
+        def xy_or_nan(coordinates):
+            if coordinates is None or len(coordinates) < 2:
+                return float('nan'), float('nan')
+            return coordinates[0], coordinates[1]
+
+        raw_x, raw_y = xy_or_nan(gaze_info.raw_gaze_coordinates)
+        cal_x, cal_y = xy_or_nan(gaze_info.calibrated_gaze_coordinates)
+        filtered_x, filtered_y = xy_or_nan(gaze_info.filtered_gaze_coordinates)
+        ret_str = (f"{gaze_info.timestamp},{raw_x},{raw_y},"
+                   f"{cal_x},{cal_y},"
+                   f"{filtered_x},{filtered_y},"
                    f"{gaze_info.left_openness},{gaze_info.right_openness},{gaze_info.tracking_state.value},"
                    f"{int(gaze_info.status)},{int(gaze_info.event.value)},{trigger}\n")
         return ret_str

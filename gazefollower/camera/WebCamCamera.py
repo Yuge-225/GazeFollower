@@ -8,6 +8,7 @@ import time
 import traceback
 
 import cv2
+import numpy as np
 
 from .Camera import Camera  # Adjust import according to your package structure
 from ..logger import Log

@@ -32,3 +32,6 @@ example/customized_camera_native_library/
 example/customized_camera_example.py
 js_port/
 js_port.zip
+results/
+.cache/
+.DS_Store

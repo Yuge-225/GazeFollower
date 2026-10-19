@@ -69,6 +69,13 @@ class MultiprocessGazeFollower:
         self._tmp_dir = Path(tempfile.gettempdir()) / "gazefollower"
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         self._tmp_sample_path = self._tmp_dir / f"sample_{int(time.time() * 1000)}.csv"
+        self._tmp_sample_path.write_text(
+            "timestamp,raw_gaze_position_x,raw_gaze_position_y,"
+            "calibrated_gaze_position_x,calibrated_gaze_position_y,"
+            "filtered_gaze_position_x,filtered_gaze_position_y,left_eye_openness,"
+            "right_eye_openness,tracking_status,status,event,trigger\n",
+            encoding="utf-8"
+        )
 
         # Config dictionary to pass across process boundary
         config_dict = {
@@ -83,6 +90,7 @@ class MultiprocessGazeFollower:
             'filter_min_cutoff': getattr(face_alignment, 'filter_min_cutoff', getattr(self.config, 'filter_min_cutoff', 1.0)),
             'filter_beta': getattr(face_alignment, 'filter_beta', getattr(self.config, 'filter_beta', 0.01)),
             'gaze_estimator_type': 'mgazenet',
+            'model_path': str(getattr(gaze_estimator, 'model_path', '')) if gaze_estimator is not None else '',
             'calibration_type': 'svr' if isinstance(self.calibration, SVRCalibration) else 'ridge',
             'filter_type': 'one_euro' if isinstance(self.gaze_filter, OneEuroFilter) else 'heuristic',
         }
@@ -94,11 +102,13 @@ class MultiprocessGazeFollower:
         self._preview_queue = ctx.Queue(maxsize=1)
         self._cali_feature_queue = ctx.Queue(maxsize=200)
         self._gaze_queue = ctx.Queue(maxsize=2)
+        self._sample_stopped_event = ctx.Event()
+        self._sample_stopped_event.set()
 
         self._worker_process = ctx.Process(
             target=mp_worker_entry,
             args=(self._cmd_queue, self._preview_queue, self._cali_feature_queue,
-                  self._gaze_queue, config_dict)
+                  self._gaze_queue, self._sample_stopped_event, config_dict)
         )
         self._worker_process.daemon = True
         self._worker_process.start()
@@ -247,8 +257,9 @@ class MultiprocessGazeFollower:
 
             # Synchronize fitted calibration model to worker process
             self._cmd_queue.put(('SET_CALIBRATION_MODEL', {
-                'weights': getattr(self.calibration, 'weights', None),
-                'has_calibrated': has_calibrated
+                'features': features if has_calibrated else None,
+                'labels': labels if has_calibrated else None,
+                'point_ids': point_ids if has_calibrated else None,
             }))
 
             user_response = self.calibration_ui.draw_cali_result(
@@ -260,10 +271,13 @@ class MultiprocessGazeFollower:
                 break
 
     def start_sampling(self):
+        self._sample_stopped_event.clear()
         self._cmd_queue.put(('START_SAMPLING', str(self._tmp_sample_path)))
 
     def stop_sampling(self):
         self._cmd_queue.put(('STOP_SAMPLING',))
+        if not self._sample_stopped_event.wait(timeout=3.0):
+            Log.w("Timed out while waiting for the sampling file to close")
 
     def get_gaze_info(self) -> GazeInfo:
         try:
@@ -292,8 +306,8 @@ class MultiprocessGazeFollower:
         self._cmd_queue.put(('SEND_TRIGGER', int(trigger_num)))
 
     def save_data(self, path: str):
-        time.sleep(0.05)
         if self._tmp_sample_path.exists():
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(str(self._tmp_sample_path), path)
             Log.i(f"Saved gaze sample data to {path}")
 

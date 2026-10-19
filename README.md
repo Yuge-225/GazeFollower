@@ -80,6 +80,33 @@ gaze_follower.release()
 
 More detailed usage information can be found [here](MORE_INFO.md).
 
+## Validation Experiment UI
+
+On macOS, double-click `run_gui.command`, or run:
+
+```bash
+python example/gui_launcher.py
+```
+
+The launcher asks only for a participant ID; a unique session ID is generated
+automatically. Choose `Validation` for an independent no-feedback point test,
+or `Live Test` to accumulate a real-time focus heatmap over a front-facing human-body model after calibration. Each session is saved under
+`results/<participant>/<session>/` with:
+
+- `gaze_samples.csv`: the SDK's frame-level output.
+- `validation.csv`: target coordinates, predictions, validity, and pixel error.
+- `summary.json`: configuration plus accuracy, precision, and valid-rate metrics.
+- `validation_plot.png`: target locations and predicted gaze samples.
+- `calibration_model/`: the session-specific personal calibration model.
+
+Live Test sessions save `gaze_samples.csv`, `live_predictions.csv`, `live_heatmap.png`, and
+`summary.json`. Live feedback is intended for qualitative inspection only; it
+must not be used as an accuracy measurement because the feedback influences the user.
+
+The default accuracy-oriented configuration is MediaPipe, SVR, 13 calibration
+points, and single-process execution. Predictions are intentionally hidden
+during validation to prevent visual feedback from biasing the measurement.
+
 ## Note
 
 This depository contains a model train on 7 million images that is sufficient for most applications. 

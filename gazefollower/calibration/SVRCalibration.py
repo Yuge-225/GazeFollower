@@ -27,6 +27,7 @@ class SVRCalibration(Calibration):
                 self.workplace_calibration_dir.mkdir(parents=True, exist_ok=True)
         else:
             self.workplace_calibration_dir = pathlib.Path(model_save_path)
+            self.workplace_calibration_dir.mkdir(parents=True, exist_ok=True)
 
         self.svr_x_path = self.workplace_calibration_dir.joinpath("svr_x.xml")
         self.svr_y_path = self.workplace_calibration_dir.joinpath("svr_y.xml")

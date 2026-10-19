@@ -2,13 +2,14 @@
 # Author: GC Zhu
 # Email: zhugc2016@gmail.com
 
+import pathlib
 import numpy as np
 from typing import Tuple
 from .Calibration import Calibration
 from ..logger import Log
 
 class MultivariateRidgeCalibration(Calibration):
-    def __init__(self, alpha: float = 0.1):
+    def __init__(self, alpha: float = 0.1, model_save_path: str = ""):
         """
         Initializes the Calibration class with a single Multivariate Ridge Regression model for both x and y.
         :param alpha: Regularization strength (lambda)
@@ -17,6 +18,12 @@ class MultivariateRidgeCalibration(Calibration):
         self.alpha = alpha
         self.weights = None
         self.has_calibrated = False
+        self.model_save_path = pathlib.Path(model_save_path) if model_save_path else None
+        if self.model_save_path is not None and self.model_save_path.exists():
+            data = np.load(self.model_save_path)
+            self.weights = data["weights"]
+            self.alpha = float(data["alpha"])
+            self.has_calibrated = True
 
     def predict(self, features, estimated_coordinate) -> Tuple:
         """
@@ -65,8 +72,11 @@ class MultivariateRidgeCalibration(Calibration):
             return self.has_calibrated, float('inf'), None
             
     def save_model(self) -> bool:
-        # Saving weights is straightforward using numpy if needed.
-        return False
+        if not self.has_calibrated or self.weights is None or self.model_save_path is None:
+            return False
+        self.model_save_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(self.model_save_path, weights=self.weights, alpha=self.alpha)
+        return True
         
     def release(self):
         pass
