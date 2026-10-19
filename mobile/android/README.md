@@ -25,9 +25,9 @@ physical display, because status/navigation insets can reduce usable pixels.
 1. Front-camera preview.
 2. MediaPipe face and eye-region localization.
 3. `base.mnn` gaze inference.
-4. Nine-point calibration and live gaze marker.
+4. Nine-point calibration with an animated target and calibrated gaze mapping.
 5. Validation with CSV/JSON export.
-6. Human-body live test and heatmap export.
+6. Human-body live test with a real-time gaze heatmap and result screen.
 
 ## Open in Android Studio
 
@@ -45,12 +45,17 @@ the copy cached under the ignored `.cxx` build directory.
 
 1. Hold the phone in the same portrait position that will be used for testing.
 2. Keep the complete face visible until all three face/eye rectangles track.
-3. Tap **Start 9-point calibration**.
-4. Look at the red center of each target without following it with the phone.
+3. Tap **Start 9-point calibration**. The camera preview and face rectangles
+   fade out, while camera analysis continues in the background.
+4. Look at the red center of each animated target without following it with
+   the phone. The outer ring shows collection progress.
 5. Each point waits for three valid inference frames, then collects eight.
-6. After point 9, the target disappears and a red/white marker shows the
-   calibrated gaze estimate. Tap **Recalibrate** whenever the pose or phone
-   position changes.
+6. After point 9, choose **Start body Live Test** or **Recalibrate**. Live Test
+   places the calibrated marker over the body diagram and accumulates a
+   full-screen heatmap. A panel reports the body region under the current gaze,
+   screen coordinates, and sample counts. Tap **Finish** to freeze the result,
+   **Clear** to reset the current heatmap, or **Preview** on the result screen
+   to return to the camera.
 
 Calibration currently lives for the running app session. Persistence and
 export are intentionally deferred to the validation/export milestone.
@@ -78,6 +83,6 @@ The ABI result determines whether the first native MNN build targets
 - M1: front-camera preview and frame timestamps. **Complete.**
 - M2: MediaPipe landmarks and face/eye crops. **Complete.**
 - M3: desktop/mobile MNN inference parity. **Complete for fixed single-frame crops.**
-- M4: nine-point calibration and gaze overlay. **In progress: on-device flow wired.**
+- M4: nine-point calibration and gaze overlay. **Complete for the first on-device flow.**
 - M5: validation and session export.
-- M6: human-body live test and heatmap export.
+- M6: human-body live test and heatmap export. **In progress: live heatmap UI complete; export pending.**

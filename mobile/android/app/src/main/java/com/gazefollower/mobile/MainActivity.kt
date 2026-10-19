@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -64,6 +65,7 @@ class MainActivity : ComponentActivity() {
         }
         overlayView = FaceOverlayView(this)
         calibrationView = GazeCalibrationView(this)
+        calibrationView.onStageChanged = ::onExperimentStageChanged
         statusView = TextView(this).apply {
             text = getString(R.string.camera_starting)
             textSize = 14f
@@ -101,6 +103,16 @@ class MainActivity : ComponentActivity() {
             startCamera()
         } else {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun onExperimentStageChanged(stage: GazeCalibrationView.Stage) {
+        val targetAlpha = if (stage == GazeCalibrationView.Stage.PREVIEW) 1f else 0f
+        listOf<View>(previewView, overlayView, statusView).forEach { view ->
+            view.animate()
+                .alpha(targetAlpha)
+                .setDuration(300L)
+                .start()
         }
     }
 
