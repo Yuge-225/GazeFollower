@@ -1,182 +1,241 @@
-<div align="center">
-  <a href="https://github.com/GanchengZhu/GazeFollower">
-    <img width="160" height="160" src="https://raw.githubusercontent.com/GanchengZhu/GazeFollower/main/gazefollower/res/image/gazefollower.png">
-  </a>
+# GazeFollower: Desktop Experiments and Android Gaze Tracking
 
-  <h1>GazeFollower</h1>
+This repository extends [the original GazeFollower project](https://github.com/GanchengZhu/GazeFollower) with a structured desktop experiment workflow and an Android implementation for on-device gaze tracking.
 
-<b>An open-source gaze tracking system for web cameras (webcam)</b><br/>
-<i>Simple, Fast, Pythonic, Accurate</i><br/>
+The first mobile target is the **Samsung Galaxy A10 (SM-A105M)** running **Android 9** with a 32-bit `armeabi-v7a` userspace.
 
-<p>
-    <a href="https://github.com/GanchengZhu/GazeFollower/actions/workflows/test.yml">
-        <img src="https://github.com/GanchengZhu/GazeFollower/actions/workflows/test.yml/badge.svg" alt="Tests Status">
-    </a>
-    <a href="https://pypi.org/project/gazefollower/">
-        <img src="https://img.shields.io/pypi/v/gazefollower.svg" alt="PyPI Version">
-    </a>
-    <img src="https://img.shields.io/github/languages/top/ganchengzhu/gazefollower" alt="Top language">
-    <img src="https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11-blue" alt="Python 3.9 | 3.10 | 3.11">
-    <img src="https://img.shields.io/codacy/grade/e21ccd9e469d4b9abd69efeaaa587cc2" alt="Code quality">
-</p>
-</div>
+> This is a research prototype. Live gaze feedback and heatmaps are intended for qualitative inspection, not clinical use or accuracy measurement.
 
-## Introduction
+## Contents
 
-**GazeFollower** is a powerful and easy-to-use gaze tracking system designed specifically for use with web cameras. It
-offers an intuitive Python API, allowing developers and researchers to integrate gaze tracking into their projects with
-minimal setup. GazeFollower provides tools for real-time gaze tracking, calibration, and data recording, making it ideal
-for applications in psychology, usability testing, and more.
+- [What We Added](#what-we-added)
+- [Mobile Workflow](#mobile-workflow)
+- [Desktop Workflow](#desktop-workflow)
+- [Android Quick Start](#android-quick-start)
+- [Desktop Quick Start](#desktop-quick-start)
+- [Data Outputs](#data-outputs)
+- [Project Structure](#project-structure)
+- [Testing](#testing)
+- [Current Status](#current-status)
+- [Privacy](#privacy)
+- [Acknowledgements and License](#acknowledgements-and-license)
 
-## Features
+## What We Added
 
-- **Accurate Tracking**: Achieves high accuracy and precision with built-in calibration methods.
-- **Pythonic API**: Easy-to-use, with functions for common tasks like calibration and data saving.
-- **Lightweight & Fast**: Optimized for real-time performance, ensuring smooth operation on most systems.
-- **Experiment Ready**: Includes methods for triggering and saving data, ideal for experiment-based applications.
+### Android deployment
 
-## Installation
+- Front-camera preview with CameraX.
+- MediaPipe face landmarks and face/eye region tracking.
+- Single-frame inference with the existing `base.mnn` model.
+- Native MNN inference through a Kotlin/C++ JNI bridge.
+- Nine-point mobile calibration with animated targets.
+- Calibrated gaze-point display.
+- Human-body Live Test with a full-screen gaze heatmap.
+- Current body-region feedback, screen coordinates, and sample counts.
+- A result screen showing the dominant body region.
 
-You can install GazeFollower via pip or by cloning the repository.
+### Desktop experiment workflow
 
-### Installing with pip
+- A launcher for participant and session setup.
+- Independent Validation and Live Test modes.
+- Validation without gaze feedback to reduce measurement bias.
+- Human-body gaze feedback and heatmap visualization.
+- Session-based CSV, JSON, and image outputs.
+- Configurable face alignment, calibration method, display, and processing mode.
 
-```bash
-python -m pip install gazefollower
+### Shared inference behavior
+
+The desktop and Android implementations use the same core model assumptions:
+
+- Face input: `224 × 224`.
+- Left and right eye inputs: `112 × 112`.
+- Right-eye crop is horizontally flipped.
+- Image values use BGR channel order and `[0, 1]` normalization.
+- Face and eye rectangles are provided as normalized model inputs.
+- Android uses the same `base.mnn` model stored under `gazefollower/res/model_weights/`.
+
+## Mobile Workflow
+
+![Synthetic mobile UI workflow](docs/images/mobile_workflow_mockup.svg)
+
+*Synthetic UI mockup with a male vector anime character. It contains no participant image or recorded gaze data.*
+
+| Stage | Behavior |
+| --- | --- |
+| **1. Preview** | Shows the front camera, face box, eye boxes, frame count, and FPS. |
+| **2. Calibration** | Hides the camera preview while analysis continues. Nine animated targets collect personal calibration samples. |
+| **3. Calibration Result** | Confirms calibration and offers Live Test or recalibration. |
+| **4. Body Live Test** | Displays a body diagram, calibrated gaze marker, full-screen heatmap, body region, coordinates, and sample counts. |
+| **5. Heatmap Result** | Freezes the heatmap and reports the dominant body region. |
+
+The heatmap accepts every valid gaze prediction inside the screen. Body transparency is used only to classify the current body region; it does not limit heatmap coverage.
+
+## Desktop Workflow
+
+The desktop launcher follows this sequence:
+
+```text
+Session setup → Camera preview → Personal calibration
+                                  ├─ Validation → Accuracy results
+                                  └─ Live Test  → Body heatmap results
 ```
 
-### Git clone from Github
+### Validation
+
+- Uses independent target points.
+- Hides gaze predictions during measurement.
+- Calculates pixel error, valid rate, and summary statistics.
+
+### Live Test
+
+- Displays a front-facing body model.
+- Shows the current gaze location and body region.
+- Accumulates a qualitative gaze heatmap.
+- Records frame-level predictions and session statistics.
+
+## Android Quick Start
+
+### Requirements
+
+- Android Studio or Android SDK command-line tools.
+- JDK 17.
+- Android SDK 34.
+- CMake 3.22.1 and Android NDK.
+- A USB-debuggable Android device.
+
+The current native package targets `armeabi-v7a` for the Galaxy A10.
+
+### Build
 
 ```bash
-git clone https://github.com/GanchengZhu/GazeFollower
-cd GazeFollower
-python setup.py install
+cd mobile/android
+ANDROID_USER_HOME="$PWD/.android-home" ./gradlew assembleDebug
 ```
 
-## Quick Start
+The first native build downloads the pinned MNN Android library and headers. Later builds reuse the local Gradle/CMake cache.
 
-Here's a basic example of how to use GazeFollower:
-
-```python
-# _*_ coding: utf-8 _*_
-
-import pygame
-from gazefollower import GazeFollower
-
-gaze_follower = GazeFollower()
-
-gaze_follower.preview()
-gaze_follower.calibrate()
-
-gaze_follower.start_sampling()
-# your experiment code here
-gaze_follower.send_trigger(10)
-pygame.time.wait(5)
-# your experiment code here
-gaze_follower.stop_sampling()
-gaze_follower.save_data("demo.csv")
-gaze_follower.release()
-```
-
-More detailed usage information can be found [here](MORE_INFO.md).
-
-## Validation Experiment UI
-
-On macOS, double-click `run_gui.command`, or run:
+### Install and launch
 
 ```bash
+adb devices -l
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.gazefollower.mobile/.MainActivity
+```
+
+More Android-specific details are available in [mobile/android/README.md](mobile/android/README.md).
+
+## Desktop Quick Start
+
+The tested macOS setup uses Python 3.10 on Apple Silicon.
+
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-macos-arm64.txt
 python example/gui_launcher.py
 ```
 
-The launcher asks only for a participant ID; a unique session ID is generated
-automatically. Choose `Validation` for an independent no-feedback point test,
-or `Live Test` to accumulate a real-time focus heatmap over a front-facing human-body model after calibration. Each session is saved under
-`results/<participant>/<session>/` with:
+On macOS, the launcher can also be opened by double-clicking `run_gui.command`.
 
-- `gaze_samples.csv`: the SDK's frame-level output.
-- `validation.csv`: target coordinates, predictions, validity, and pixel error.
-- `summary.json`: configuration plus accuracy, precision, and valid-rate metrics.
-- `validation_plot.png`: target locations and predicted gaze samples.
-- `calibration_model/`: the session-specific personal calibration model.
+## Data Outputs
 
-Live Test sessions save `gaze_samples.csv`, `live_predictions.csv`, `live_heatmap.png`, and
-`summary.json`. Live feedback is intended for qualitative inspection only; it
-must not be used as an accuracy measurement because the feedback influences the user.
+Desktop sessions are stored under:
 
-The default accuracy-oriented configuration is MediaPipe, SVR, 13 calibration
-points, and single-process execution. Predictions are intentionally hidden
-during validation to prevent visual feedback from biasing the measurement.
-
-## Note
-
-This depository contains a model train on 7 million images that is sufficient for most applications. 
-
-To gain access to the base model trained on 32 million images, please email zhiguo@zju.edu.cn.
-
-### Email Prompt
-
-Here’s a template for your request email. Please keep the subject line unchanged:
-
-```
-Subject: Request for Access to the Base Model Trained on 32 Million Images
-
-Dear Prof. Zhiguo Wang,
-
-I hope this message finds you well.
-
-My name is [Your Name], and I am a [student/researcher] at [Your Affiliation]. I am writing to request access to the base model trained on 32 million images.
-
-I assure you that I will use this model solely for academic and research purposes and will not utilize it for commercial activities or share it with others.
-
-Thank you for considering my request. I look forward to receiving access to the model.
-
-Best regards,
-[Your Name]
+```text
+results/<participant_id>/<session_id>/
 ```
 
-### The Usage of The Base Model Trained on 32 Million Images
+### Validation session
 
-```python
-import pygame
-from gazefollower import GazeFollower
-from gazefollower.gaze_estimator import MGazeNetGazeEstimator
+| File | Contents |
+| --- | --- |
+| `gaze_samples.csv` | Frame-level SDK output. |
+| `validation.csv` | Targets, predictions, validity, and pixel error. |
+| `summary.json` | Configuration and aggregate metrics. |
+| `validation_plot.png` | Target and predicted-gaze visualization. |
+| `calibration_model/` | Session-specific calibration model. |
 
-# The base model path need to pass here
-gaze_follower = GazeFollower(gaze_estimator=MGazeNetGazeEstimator(model_path='path to model'))
+### Live Test session
 
-gaze_follower.preview()
-gaze_follower.calibrate()
+| File | Contents |
+| --- | --- |
+| `gaze_samples.csv` | Frame-level SDK output. |
+| `live_predictions.csv` | Predicted coordinates, body region, and tracking state. |
+| `live_heatmap.png` | Final qualitative heatmap. |
+| `summary.json` | Session duration, valid rate, FPS, and region statistics. |
 
-gaze_follower.start_sampling()
-# your experiment code
-gaze_follower.send_trigger(10)
-pygame.time.wait(5)
-# your experiment code
-gaze_follower.stop_sampling()
+Android CSV/JSON export is not implemented yet.
 
-gaze_follower.save_data("demo.csv")
-gaze_follower.release()
+## Project Structure
+
+```text
+GazeFollower/
+├── gazefollower/                 # Original Python package and shared assets
+├── example/
+│   ├── gui_launcher.py           # Desktop experiment launcher
+│   └── experiment_runner.py      # Validation and Live Test workflows
+├── mobile/android/               # Android application
+│   └── app/src/main/
+│       ├── java/                 # Camera, MediaPipe, calibration, and UI
+│       └── cpp/                  # MNN JNI bridge
+├── tests/                        # Desktop tests
+└── docs/images/                  # Documentation-only synthetic graphics
 ```
 
-## How to fine-tune
+## Testing
 
-Please send an email to `zhiguo@zju.edu.cn` to access data collection, data preprocessing, and fine-tuning code
+### Android unit tests
 
-## License Information
+```bash
+cd mobile/android
+ANDROID_USER_HOME="$PWD/.android-home" ./gradlew testDebugUnitTest
+```
 
-This project is licensed under
-the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)](https://creativecommons.org/licenses/by-nc-sa/4.0/).
-Please see LICENSE file.
+### Android device tests
 
-### Disclaimer
+```bash
+cd mobile/android
+ANDROID_USER_HOME="$PWD/.android-home" ./gradlew connectedDebugAndroidTest
+```
 
-The work is provided "as-is" without any warranties, express or implied, including but not limited to the warranties of
-merchantability, fitness for a particular purpose, or non-infringement.
+`connectedDebugAndroidTest` may remove the application after testing. Reinstall the debug APK before manual testing if necessary.
 
+### Desktop tests
 
-### Citations
+```bash
+pytest tests
+```
 
-```BibTeX
+## Current Status
+
+| Component | Status |
+| --- | --- |
+| Desktop preview and calibration | Complete |
+| Desktop validation and exports | Complete |
+| Desktop human-body Live Test | Complete |
+| Android camera and MediaPipe tracking | Complete |
+| Android `base.mnn` inference | Complete |
+| Android nine-point calibration | Complete |
+| Android full-screen Live Test heatmap | Complete |
+| Android validation workflow | Planned |
+| Android CSV/JSON and heatmap export | Planned |
+| Android calibration persistence | Planned |
+
+## Privacy
+
+- Documentation must not include participant faces or identifiable test-session screenshots.
+- The workflow image in this README is a synthetic vector mockup.
+- Camera frames are processed locally by the current prototype.
+- Researchers are responsible for consent, data handling, retention, and institutional requirements.
+
+## Acknowledgements and License
+
+This project is derived from [GanchengZhu/GazeFollower](https://github.com/GanchengZhu/GazeFollower). The original project provides the gaze-tracking architecture, model integration, calibration framework, and Python API on which this work is based.
+
+Please cite the upstream project when using this derivative work:
+
+```bibtex
 @article{zhu2025gazefollower,
   title={GazeFollower: An open-source system for deep learning-based gaze tracking with web cameras},
   author={Zhu, Gancheng and Duan, Xiaoting and Huang, Zehao and Wang, Rong and Zhang, Shuai and Wang, Zhiguo},
@@ -189,35 +248,4 @@ merchantability, fitness for a particular purpose, or non-infringement.
 }
 ```
 
-```BibTeX
-@article{zhu2024neural,
-  title={Neural Networks With Linear Adaptive Batch Normalization and Swarm Intelligence Calibration for Real-Time Gaze Estimation on Smartphones},
-  author={Zhu, Gancheng and Li, Yongkai and Zhang, Shuai and Duan, Xiaoting and Huang, Zehao and Yao, Zhaomin and Wang, Rong and Wang, Zhiguo},
-  journal={International Journal of Intelligent Systems},
-  volume={2024},
-  number={1},
-  pages={2644725},
-  year={2024},
-  publisher={Wiley Online Library}
-}
-```
-
-```BibTeX
-@article{zhu2025smartphone,
-  title={Smartphone eye-tracking with deep learning: Data quality and field testing},
-  author={Zhu, Gancheng and Huang, Zehao and Duan, Xiaoting and Zhang, Shuai and Wang, Rong and Li, Yongkai and Wang, Zhiguo},
-  journal={Behavior Research Methods},
-  volume={57},
-  number={7},
-  pages={1--19},
-  year={2025},
-  publisher={Springer}
-}
-```
-
-# NEED TO IMPLEMENTATION
-
-- Blink Detection
-- Event Detection
-- Calibration Optimization
-- Reduce Jitter
+This repository retains the upstream **CC BY-NC-SA 4.0** license. See [LICENSE-CC-BY-NC-SA](LICENSE-CC-BY-NC-SA).

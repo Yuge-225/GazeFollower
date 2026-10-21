@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="810" viewBox="0 0 1440 810" role="img" aria-labelledby="title desc">
+  <title id="title">Synthetic GazeFollower mobile workflow</title>
+  <desc id="desc">Four simulated phone screens showing preview, calibration, body live test, and heatmap result. No participant image or recorded data is used.</desc>
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#15263e"/>
+    </linearGradient>
+    <linearGradient id="camera" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#334155"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <radialGradient id="hotRed">
+      <stop offset="0" stop-color="#ef4444" stop-opacity="0.95"/>
+      <stop offset="0.35" stop-color="#facc15" stop-opacity="0.75"/>
+      <stop offset="0.68" stop-color="#22c55e" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#2563eb" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="hotBlue">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.8"/>
+      <stop offset="0.55" stop-color="#2563eb" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#2563eb" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#020617" flood-opacity="0.65"/>
+    </filter>
+    <g id="phone">
+      <rect width="276" height="570" rx="36" fill="#020617" stroke="#475569" stroke-width="3" filter="url(#shadow)"/>
+      <rect x="11" y="11" width="254" height="548" rx="27" fill="#091321"/>
+      <rect x="105" y="20" width="66" height="8" rx="4" fill="#334155"/>
+      <circle cx="190" cy="24" r="4" fill="#475569"/>
+    </g>
+    <!-- Synthetic male anime character with separately connected head, torso, arms, hands, legs, and shoes. -->
+    <g id="animeCharacter" stroke="#dbeafe" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Short hair and head -->
+      <ellipse cx="0" cy="-108" rx="30" ry="35" fill="#fed7aa"/>
+      <path d="M-31 -113 Q-32 -143 -8 -150 L-12 -141 Q2 -154 21 -143 L16 -136 Q31 -136 32 -114 L21 -124 L10 -119 L2 -130 L-8 -119 L-20 -124Z" fill="#312e81" stroke="#312e81"/>
+      <ellipse cx="-11" cy="-108" rx="4" ry="6" fill="#172554" stroke="none"/>
+      <ellipse cx="11" cy="-108" rx="4" ry="6" fill="#172554" stroke="none"/>
+      <circle cx="-10" cy="-110" r="1.5" fill="#ffffff" stroke="none"/>
+      <circle cx="12" cy="-110" r="1.5" fill="#ffffff" stroke="none"/>
+      <path d="M-7 -91 Q0 -88 7 -91" fill="none" stroke="#9f1239" stroke-width="2"/>
+
+      <!-- Neck and hoodie torso -->
+      <path d="M-10 -78 L-9 -62 L9 -62 L10 -78" fill="#fed7aa"/>
+      <path d="M-39 -55 Q-22 -66 -10 -62 L0 -51 L10 -62 Q22 -66 39 -55 L33 51 Q17 58 0 58 Q-17 58 -33 51Z" fill="#0ea5e9"/>
+      <path d="M-12 -61 Q0 -45 12 -61 Q8 -40 0 -34 Q-8 -40 -12 -61Z" fill="#075985"/>
+      <path d="M-5 -39 L-7 -16 M5 -39 L7 -16" fill="none" stroke="#e0f2fe" stroke-width="2"/>
+      <path d="M-17 19 Q0 10 17 19 L14 37 Q0 44 -14 37Z" fill="#0284c7" stroke="#7dd3fc" stroke-width="2"/>
+
+      <!-- Left arm and hand -->
+      <path d="M-36 -51 Q-49 -43 -54 -23 L-64 29 L-55 68 L-40 65 L-45 28 L-31 -7" fill="#38bdf8"/>
+      <ellipse cx="-47" cy="73" rx="10" ry="13" fill="#fed7aa" transform="rotate(-10 -47 73)"/>
+
+      <!-- Right arm and hand -->
+      <path d="M36 -51 Q49 -43 54 -23 L64 29 L55 68 L40 65 L45 28 L31 -7" fill="#38bdf8"/>
+      <ellipse cx="47" cy="73" rx="10" ry="13" fill="#fed7aa" transform="rotate(10 47 73)"/>
+
+      <!-- Jeans and waist -->
+      <path d="M-32 48 Q0 58 32 48 L31 91 L7 94 L0 78 L-7 94 L-31 91Z" fill="#1d4ed8"/>
+      <path d="M-31 58 Q0 67 31 58" fill="none" stroke="#93c5fd" stroke-width="3"/>
+
+      <!-- Left leg and shoe -->
+      <path d="M-31 87 L-7 90 L-8 148 L-15 199 L-34 199 L-30 145Z" fill="#2563eb"/>
+      <path d="M-34 194 L-14 194 L-10 214 Q-25 220 -44 214Z" fill="#1e293b"/>
+
+      <!-- Right leg and shoe -->
+      <path d="M7 90 L31 87 L30 145 L34 199 L15 199 L8 148Z" fill="#2563eb"/>
+      <path d="M14 194 L34 194 L44 214 Q25 220 10 214Z" fill="#1e293b"/>
+    </g>
+    <style>
+      .title { font: 700 30px Inter, Arial, sans-serif; fill: #f8fafc; }
+      .subtitle { font: 400 17px Inter, Arial, sans-serif; fill: #94a3b8; }
+      .stage { font: 700 19px Inter, Arial, sans-serif; fill: #e2e8f0; letter-spacing: 1px; }
+      .small { font: 400 13px Inter, Arial, sans-serif; fill: #cbd5e1; }
+      .tiny { font: 400 11px Inter, Arial, sans-serif; fill: #94a3b8; }
+      .button { font: 600 13px Inter, Arial, sans-serif; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="810" rx="24" fill="url(#page)"/>
+  <text x="720" y="52" text-anchor="middle" class="title">Android Mobile Workflow</text>
+  <text x="720" y="81" text-anchor="middle" class="subtitle">Synthetic interface mockup — no participant imagery or recorded gaze data</text>
+
+  <!-- Phone 1: preview -->
+  <g transform="translate(62 116)">
+    <use href="#phone"/>
+    <g transform="translate(11 11)">
+      <rect width="254" height="548" rx="27" fill="url(#camera)"/>
+      <rect x="30" y="34" width="194" height="42" rx="14" fill="#0284c7"/>
+      <text x="127" y="60" text-anchor="middle" class="button">Start 9-point calibration</text>
+
+      <!-- Generic vector avatar, not a person -->
+      <circle cx="127" cy="242" r="67" fill="#64748b"/>
+      <path d="M72 227 Q78 153 127 153 Q176 153 182 227 Q168 189 127 190 Q86 189 72 227Z" fill="#1e293b"/>
+      <circle cx="104" cy="237" r="7" fill="#e2e8f0"/>
+      <circle cx="150" cy="237" r="7" fill="#e2e8f0"/>
+      <path d="M105 273 Q127 287 149 273" fill="none" stroke="#e2e8f0" stroke-width="5" stroke-linecap="round"/>
+      <rect x="58" y="166" width="138" height="151" fill="none" stroke="#22c55e" stroke-width="3"/>
+      <rect x="85" y="222" width="39" height="29" fill="none" stroke="#38bdf8" stroke-width="3"/>
+      <rect x="131" y="222" width="39" height="29" fill="none" stroke="#38bdf8" stroke-width="3"/>
+      <rect y="494" width="254" height="54" fill="#020617" fill-opacity="0.84"/>
+      <text x="127" y="517" text-anchor="middle" class="small">Face + eyes detected</text>
+      <text x="127" y="537" text-anchor="middle" class="tiny">SIMULATED AVATAR · 7.2 FPS</text>
+    </g>
+    <text x="138" y="610" text-anchor="middle" class="stage">PREVIEW</text>
+  </g>
+
+  <!-- Arrow -->
+  <path d="M350 400 H376" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+  <path d="M370 392 L380 400 L370 408" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Phone 2: calibration -->
+  <g transform="translate(391 116)">
+    <use href="#phone"/>
+    <g transform="translate(11 11)">
+      <rect width="254" height="548" rx="27" fill="#08111f"/>
+      <text x="127" y="54" text-anchor="middle" class="stage">CALIBRATION</text>
+      <text x="127" y="78" text-anchor="middle" class="tiny">Look steadily at the target</text>
+      <circle cx="196" cy="195" r="43" fill="none" stroke="#0ea5e9" stroke-opacity="0.28" stroke-width="6"/>
+      <circle cx="196" cy="195" r="31" fill="#f8fafc"/>
+      <circle cx="196" cy="195" r="11" fill="#ef4444"/>
+      <path d="M196 154 A41 41 0 1 1 162 217" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round"/>
+      <g fill="#1e293b">
+        <circle cx="28" cy="113" r="5"/><circle cx="127" cy="113" r="5"/><circle cx="226" cy="113" r="5"/>
+        <circle cx="28" cy="274" r="5"/><circle cx="127" cy="274" r="5"/><circle cx="226" cy="274" r="5"/>
+        <circle cx="28" cy="435" r="5"/><circle cx="127" cy="435" r="5"/><circle cx="226" cy="435" r="5"/>
+      </g>
+      <text x="127" y="491" text-anchor="middle" class="stage">Point 4 of 9</text>
+      <text x="127" y="518" text-anchor="middle" class="small">Keep looking at the center</text>
+    </g>
+    <text x="138" y="610" text-anchor="middle" class="stage">CALIBRATION</text>
+  </g>
+
+  <!-- Arrow -->
+  <path d="M679 400 H705" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+  <path d="M699 392 L709 400 L699 408" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Phone 3: live test -->
+  <g transform="translate(720 116)">
+    <use href="#phone"/>
+    <g transform="translate(11 11)">
+      <rect width="254" height="548" rx="27" fill="#08111f"/>
+      <text x="127" y="48" text-anchor="middle" class="stage">BODY LIVE TEST</text>
+      <text x="127" y="69" text-anchor="middle" class="tiny">Full-screen gaze density</text>
+      <g transform="translate(127 301) scale(.72)"><use href="#animeCharacter"/></g>
+      <circle cx="127" cy="286" r="68" fill="url(#hotRed)"/>
+      <circle cx="210" cy="356" r="61" fill="url(#hotBlue)"/>
+      <circle cx="38" cy="430" r="48" fill="url(#hotBlue)"/>
+      <circle cx="127" cy="286" r="10" fill="none" stroke="#ffffff" stroke-width="3"/>
+      <circle cx="127" cy="286" r="3" fill="#fff7d6"/>
+      <rect x="119" y="91" width="125" height="104" rx="13" fill="#0f172a" fill-opacity="0.93" stroke="#334155"/>
+      <text x="233" y="112" text-anchor="end" class="tiny">CURRENT BODY REGION</text>
+      <text x="233" y="138" text-anchor="end" font-family="Inter,Arial" font-size="18" font-weight="700" fill="#86efac">Chest</text>
+      <text x="233" y="160" text-anchor="end" class="tiny">x 360 · y 720 px</text>
+      <text x="233" y="181" text-anchor="end" class="tiny">Region 48 · Screen 126</text>
+      <rect x="22" y="496" width="133" height="38" rx="13" fill="#0284c7"/>
+      <text x="88" y="520" text-anchor="middle" class="button">Finish</text>
+      <rect x="166" y="496" width="66" height="38" rx="13" fill="#1e293b" stroke="#475569"/>
+      <text x="199" y="520" text-anchor="middle" class="button">Clear</text>
+    </g>
+    <text x="138" y="610" text-anchor="middle" class="stage">LIVE TEST</text>
+  </g>
+
+  <!-- Arrow -->
+  <path d="M1008 400 H1034" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+  <path d="M1028 392 L1038 400 L1028 408" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Phone 4: result -->
+  <g transform="translate(1049 116)">
+    <use href="#phone"/>
+    <g transform="translate(11 11)">
+      <rect width="254" height="548" rx="27" fill="#08111f"/>
+      <text x="127" y="48" text-anchor="middle" class="stage">HEATMAP RESULT</text>
+      <text x="127" y="69" text-anchor="middle" class="tiny">482 valid screen samples</text>
+      <g transform="translate(127 301) scale(.72)"><use href="#animeCharacter"/></g>
+      <circle cx="127" cy="286" r="84" fill="url(#hotRed)"/>
+      <circle cx="181" cy="376" r="68" fill="url(#hotBlue)"/>
+      <circle cx="52" cy="436" r="55" fill="url(#hotBlue)"/>
+      <rect x="109" y="91" width="135" height="82" rx="13" fill="#0f172a" fill-opacity="0.93" stroke="#334155"/>
+      <text x="233" y="114" text-anchor="end" class="tiny">DOMINANT BODY REGION</text>
+      <text x="233" y="143" text-anchor="end" font-family="Inter,Arial" font-size="19" font-weight="700" fill="#86efac">Chest</text>
+      <rect x="22" y="496" width="133" height="38" rx="13" fill="#0284c7"/>
+      <text x="88" y="520" text-anchor="middle" class="button">Run again</text>
+      <rect x="166" y="496" width="66" height="38" rx="13" fill="#1e293b" stroke="#475569"/>
+      <text x="199" y="520" text-anchor="middle" class="button">Preview</text>
+    </g>
+    <text x="138" y="610" text-anchor="middle" class="stage">HEATMAP RESULT</text>
+  </g>
+
+  <rect x="390" y="763" width="660" height="30" rx="15" fill="#0f172a" stroke="#334155"/>
+  <text x="720" y="784" text-anchor="middle" class="small">Camera frames stay local · Preview is hidden during calibration and Live Test</text>
+</svg>
