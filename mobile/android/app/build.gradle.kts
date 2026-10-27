@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.gazefollower.mobile"
     compileSdk = 34
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.gazefollower.mobile"
@@ -15,8 +16,8 @@ android {
         versionName = "0.1.0"
 
         ndk {
-            // The target SM-A105M runs a 32-bit Android userspace.
-            abiFilters += "armeabi-v7a"
+            // Keep Galaxy A10 support and add the Pixel 9's 64-bit ABI.
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
 
         externalNativeBuild {

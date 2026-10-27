@@ -1,24 +1,24 @@
 # GazeFollower Mobile — Android
 
 Android implementation of the GazeFollower validation and live-test workflow.
-The first target device is a Samsung Galaxy A10 (SM-A105M) running Android 9
-(API 28). The first release is portrait-only so camera, calibration, and screen
-coordinates have one unambiguous orientation.
+The verified devices are a Samsung Galaxy A10 running Android 9 and a Google
+Pixel 9 running Android 16. The first release is portrait-only so camera,
+calibration, and screen coordinates have one unambiguous orientation.
 
 ## Verified device baseline
 
-| Property | Value |
-| --- | --- |
-| Model | Samsung SM-A105M (Galaxy A10) |
-| Android API | 28 |
-| Primary ABI | `armeabi-v7a` |
-| ABI list | `armeabi-v7a,armeabi` |
-| Physical display | 720 × 1520 |
-| Physical density | 280 dpi |
+| Property | Galaxy A10 | Pixel 9 |
+| --- | --- | --- |
+| Model | Samsung SM-A105M | Google Pixel 9 (`tokay`) |
+| Android API | 28 | 36 |
+| Primary ABI | `armeabi-v7a` | `arm64-v8a` |
+| Physical display | 720 × 1520 | 1080 × 2424 |
+| Physical density | 280 dpi | 420 dpi |
 
-The application packages native dependencies only for `armeabi-v7a`. Runtime
-calibration uses the actual application viewport rather than assuming the full
-physical display, because status/navigation insets can reduce usable pixels.
+The application packages native dependencies for both `armeabi-v7a` and
+`arm64-v8a`. Runtime calibration uses the actual application viewport rather
+than assuming the full physical display, because status/navigation insets can
+reduce usable pixels.
 
 ## Scope
 
@@ -38,8 +38,10 @@ into the Android asset set, avoiding duplicate model weights in Git.
 The first native build downloads the official MNN 3.6.1 Android release and
 its matching public headers from Alibaba's GitHub release. CMake verifies the
 downloaded archive and every header with pinned SHA-256 values, then packages
-only the `armeabi-v7a` CPU library required by the Galaxy A10. Later builds use
-the copy cached under the ignored `.cxx` build directory.
+the matching CPU library for each configured ABI. The project uses NDK r28c so
+its native output supports 16 KB ELF alignment on current 64-bit Android
+devices. Later builds use the copy cached under the ignored `.cxx` build
+directory.
 
 ## Nine-point calibration
 
@@ -79,7 +81,7 @@ The ABI result determines whether the first native MNN build targets
 
 ## Milestones
 
-- M0: reproducible Android 9 build and installation. **Complete.**
+- M0: reproducible Android 9/16 build and installation on Galaxy A10 and Pixel 9. **Complete.**
 - M1: front-camera preview and frame timestamps. **Complete.**
 - M2: MediaPipe landmarks and face/eye crops. **Complete.**
 - M3: desktop/mobile MNN inference parity. **Complete for fixed single-frame crops.**

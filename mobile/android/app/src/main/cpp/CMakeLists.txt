@@ -7,6 +7,8 @@ set(MNN_DOWNLOAD_DIR "${CMAKE_BINARY_DIR}/mnn-${MNN_VERSION}")
 set(MNN_ARCHIVE "${MNN_DOWNLOAD_DIR}/mnn-android.zip")
 set(MNN_PACKAGE_DIR "${MNN_DOWNLOAD_DIR}/package")
 set(MNN_INCLUDE_DIR "${MNN_DOWNLOAD_DIR}/include")
+set(MNN_RELEASE_DIR "${MNN_PACKAGE_DIR}/mnn_${MNN_VERSION}_android_armv7_armv8_cpu_opencl_vulkan")
+set(MNN_LIBRARY "${MNN_RELEASE_DIR}/${ANDROID_ABI}/libMNN.so")
 
 file(MAKE_DIRECTORY "${MNN_DOWNLOAD_DIR}" "${MNN_INCLUDE_DIR}/MNN")
 if(NOT EXISTS "${MNN_ARCHIVE}")
@@ -18,9 +20,13 @@ if(NOT EXISTS "${MNN_ARCHIVE}")
         SHOW_PROGRESS
     )
 endif()
-if(NOT EXISTS "${MNN_PACKAGE_DIR}/mnn_${MNN_VERSION}_android_armv7_armv8_cpu_opencl_vulkan/armeabi-v7a/libMNN.so")
+if(NOT EXISTS "${MNN_LIBRARY}")
     file(MAKE_DIRECTORY "${MNN_PACKAGE_DIR}")
     file(ARCHIVE_EXTRACT INPUT "${MNN_ARCHIVE}" DESTINATION "${MNN_PACKAGE_DIR}")
+endif()
+
+if(NOT EXISTS "${MNN_LIBRARY}")
+    message(FATAL_ERROR "MNN ${MNN_VERSION} does not provide a library for Android ABI ${ANDROID_ABI}")
 endif()
 
 function(download_mnn_header filename sha256)
@@ -44,7 +50,7 @@ download_mnn_header("MNNDefine.h" "481f2ff7a4dd29ce779384b8f5169c8b1aee8ebd8f0a9
 
 add_library(MNN SHARED IMPORTED)
 set_target_properties(MNN PROPERTIES IMPORTED_LOCATION
-    "${MNN_PACKAGE_DIR}/mnn_${MNN_VERSION}_android_armv7_armv8_cpu_opencl_vulkan/${ANDROID_ABI}/libMNN.so"
+    "${MNN_LIBRARY}"
 )
 
 add_library(gazefollower_mnn SHARED gaze_mnn_jni.cpp)
