@@ -20,9 +20,11 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 class GazeCalibrationView(context: Context) : View(context) {
-    enum class Stage { PREVIEW, CALIBRATION, CALIBRATION_RESULT, LIVE_TEST, HEATMAP_RESULT }
+    enum class Stage { PREVIEW, CALIBRATION, CALIBRATION_RESULT, VIDEO_TEST, LIVE_TEST, HEATMAP_RESULT }
 
     var onStageChanged: ((Stage) -> Unit)? = null
+    var onStartVideoExperiment: (() -> Unit)? = null
+    var onVideoGaze: ((Float, Float) -> Unit)? = null
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val primaryButton = RectF()
@@ -59,6 +61,10 @@ class GazeCalibrationView(context: Context) : View(context) {
     fun onGaze(result: GazeInferenceResult) {
         when (stage) {
             Stage.CALIBRATION -> collect(result.features)
+            Stage.VIDEO_TEST -> {
+                val prediction = model?.predict(result.features) ?: return
+                onVideoGaze?.invoke(prediction[0], prediction[1])
+            }
             Stage.LIVE_TEST -> {
                 val prediction = model?.predict(result.features) ?: return
                 val insideScreen = prediction[0] >= 0f && prediction[0] < 1f &&
@@ -167,9 +173,16 @@ class GazeCalibrationView(context: Context) : View(context) {
             Stage.PREVIEW -> if (primaryButton.contains(event.x, event.y)) startCalibration()
             Stage.CALIBRATION -> Unit
             Stage.CALIBRATION_RESULT -> when {
-                primaryButton.contains(event.x, event.y) -> startLiveTest()
+                primaryButton.contains(event.x, event.y) -> {
+                    val startVideo = onStartVideoExperiment
+                    if (startVideo == null) startLiveTest() else {
+                        transitionTo(Stage.VIDEO_TEST)
+                        startVideo()
+                    }
+                }
                 secondaryButton.contains(event.x, event.y) -> startCalibration()
             }
+            Stage.VIDEO_TEST -> Unit
             Stage.LIVE_TEST -> when {
                 primaryButton.contains(event.x, event.y) -> transitionTo(Stage.HEATMAP_RESULT)
                 secondaryButton.contains(event.x, event.y) -> {
@@ -201,6 +214,7 @@ class GazeCalibrationView(context: Context) : View(context) {
             Stage.PREVIEW -> drawPreviewControls(canvas)
             Stage.CALIBRATION -> drawCalibration(canvas)
             Stage.CALIBRATION_RESULT -> drawCalibrationResult(canvas)
+            Stage.VIDEO_TEST -> drawStageBackground(canvas)
             Stage.LIVE_TEST -> drawBodyTest(canvas, false)
             Stage.HEATMAP_RESULT -> drawBodyTest(canvas, true)
         }
@@ -273,7 +287,7 @@ class GazeCalibrationView(context: Context) : View(context) {
 
         primaryButton.set(width * 0.16f, height * 0.57f, width * 0.84f, height * 0.57f + 88f)
         secondaryButton.set(width * 0.16f, height * 0.57f + 108f, width * 0.84f, height * 0.57f + 196f)
-        drawButton(canvas, primaryButton, "Start body Live Test", true)
+        drawButton(canvas, primaryButton, if (onStartVideoExperiment == null) "Start body Live Test" else "Start video experiment", true)
         drawButton(canvas, secondaryButton, "Recalibrate", false)
     }
 

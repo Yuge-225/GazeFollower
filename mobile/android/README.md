@@ -29,6 +29,32 @@ reduce usable pixels.
 5. Validation with CSV/JSON export.
 6. Human-body live test with a real-time gaze heatmap and result screen.
 
+## Author and run workflow
+
+The launcher separates experiment preparation from participant testing:
+
+- **Author Experiment** imports up to five local videos, assigns one target
+  body region to each video (`Head`, `Chest`, `Abdomen`, `Leg`, or `Foot`), and
+  stores normalized rectangular ROI keyframes. Each saved box remains active
+  until the next edit. Authors can pause playback, drag the replay progress bar
+  to a specific frame, adjust the box, review the result, and publish a version.
+- **Run Experiment** is enabled only for a published experiment. It retains the
+  existing front-camera preview and nine-point calibration, then presents the
+  authored trials without showing the camera preview, gaze marker, or truth
+  ROI. The first 500 ms of each video is excluded from scoring.
+
+The result dashboard reports strict and 20%-expanded ROI hit rates, per-video
+sample counts, and mean distance to the target ROI. Each video opens a detail
+view with a synchronized replay, cumulative gaze heatmap, truth ROI, and plain-
+language metric definitions. Each completed run writes a `session_summary.json`
+and `gaze_samples.csv` under the app's private `files/sessions/<session-id>`
+directory. Imported videos and annotation JSON stay in app-private storage and
+are not added to Git.
+
+ROI annotation uses manually selected change points rather than requiring a box
+on every decoded frame. Exact codec-frame stepping and automatic pose tracking
+are deferred.
+
 ## Open in Android Studio
 
 Open this `mobile/android` directory as the project root. The build maps the

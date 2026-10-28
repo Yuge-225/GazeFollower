@@ -24,6 +24,9 @@ import com.gazefollower.mobile.face.FaceOverlayView
 import com.gazefollower.mobile.inference.GazeInferenceResult
 import com.gazefollower.mobile.inference.MnnGazeEstimator
 import com.gazefollower.mobile.calibration.GazeCalibrationView
+import com.gazefollower.mobile.experiment.Experiment
+import com.gazefollower.mobile.experiment.ExperimentStore
+import com.gazefollower.mobile.experiment.VideoExperimentView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -38,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var overlayView: FaceOverlayView
     private lateinit var statusView: TextView
     private lateinit var calibrationView: GazeCalibrationView
+    private lateinit var videoExperimentView: VideoExperimentView
     private lateinit var analysisExecutor: ExecutorService
     private var faceProcessor: FaceLandmarkerProcessor? = null
     private var gazeEstimator: MnnGazeEstimator? = null
@@ -66,6 +70,14 @@ class MainActivity : ComponentActivity() {
         overlayView = FaceOverlayView(this)
         calibrationView = GazeCalibrationView(this)
         calibrationView.onStageChanged = ::onExperimentStageChanged
+        val experiment = ExperimentStore(this).load()
+        videoExperimentView = VideoExperimentView(this).apply {
+            onExit = { finish() }
+        }
+        if (experiment.status == Experiment.STATUS_PUBLISHED && experiment.videos.isNotEmpty()) {
+            calibrationView.onStartVideoExperiment = { videoExperimentView.start(experiment) }
+            calibrationView.onVideoGaze = videoExperimentView::onGaze
+        }
         statusView = TextView(this).apply {
             text = getString(R.string.camera_starting)
             textSize = 14f
@@ -93,6 +105,10 @@ class MainActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM,
+            ))
+            addView(videoExperimentView, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
             ))
         }
         setContentView(root)
