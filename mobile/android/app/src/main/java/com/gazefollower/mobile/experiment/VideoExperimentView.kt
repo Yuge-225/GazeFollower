@@ -36,10 +36,12 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val strictHit: Boolean,
         val tolerantHit: Boolean,
         val distancePx: Float,
+        val matchedAois: String,
     )
 
     private data class TrialResult(
         val video: ExperimentVideo,
+        var capturedGazeSamples: Int = 0,
         var validSamples: Int = 0,
         var strictHits: Int = 0,
         var tolerantHits: Int = 0,
@@ -79,34 +81,41 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             val exp = experiment ?: return@post
             val video = exp.videos.getOrNull(trialIndex) ?: return@post
             val player = videoView ?: return@post
+            val result = results.lastOrNull() ?: return@post
+            result.capturedGazeSamples += 1
             val position = player.currentPosition.toLong()
             if (position < SCORING_DELAY_MS) return@post
-            val roi = video.roiAt(position) ?: return@post
+            val activeAois = video.activeAoisAt(position)
+            if (activeAois.isEmpty()) return@post
             val bounds = videoContentBounds(video)
             val gazeX = normalizedX * width
             val gazeY = normalizedY * height
             val videoX = ((gazeX - bounds.left) / bounds.width()).coerceIn(0f, 1f)
             val videoY = ((gazeY - bounds.top) / bounds.height()).coerceIn(0f, 1f)
-            val strict = mapRoi(roi, bounds)
-            val tolerant = mapRoi(roi.expanded(0.20f), bounds)
-            val strictHit = strict.contains(gazeX, gazeY)
-            val tolerantHit = tolerant.contains(gazeX, gazeY)
-            val dx = when {
-                gazeX < strict.left -> strict.left - gazeX
-                gazeX > strict.right -> gazeX - strict.right
-                else -> 0f
+            val strictRegions = activeAois.map { (target, roi) -> target to mapRoi(roi, bounds) }
+            val tolerantRegions = activeAois.map { (target, roi) -> target to mapRoi(roi.expanded(0.20f), bounds) }
+            val strictHit = strictRegions.any { (_, region) -> region.contains(gazeX, gazeY) }
+            val tolerantHit = tolerantRegions.any { (_, region) -> region.contains(gazeX, gazeY) }
+            val distance = strictRegions.minOf { (_, region) ->
+                val dx = when {
+                    gazeX < region.left -> region.left - gazeX
+                    gazeX > region.right -> gazeX - region.right
+                    else -> 0f
+                }
+                val dy = when {
+                    gazeY < region.top -> region.top - gazeY
+                    gazeY > region.bottom -> gazeY - region.bottom
+                    else -> 0f
+                }
+                hypot(dx, dy)
             }
-            val dy = when {
-                gazeY < strict.top -> strict.top - gazeY
-                gazeY > strict.bottom -> gazeY - strict.bottom
-                else -> 0f
-            }
-            val result = results.lastOrNull() ?: return@post
+            val matchedAois = strictRegions.filter { (_, region) -> region.contains(gazeX, gazeY) }
+                .joinToString("|") { it.first.label }
             result.validSamples += 1
             if (strictHit) result.strictHits += 1
             if (tolerantHit) result.tolerantHits += 1
-            result.distanceSum += hypot(dx, dy)
-            samples += Sample(video.id, position, gazeX, gazeY, videoX, videoY, strictHit, tolerantHit, hypot(dx, dy))
+            result.distanceSum += distance
+            samples += Sample(video.id, position, gazeX, gazeY, videoX, videoY, strictHit, tolerantHit, distance, matchedAois)
         }
     }
 
@@ -121,8 +130,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(24), dp(24), dp(24))
             addView(label("TRIAL ${trialIndex + 1} OF ${exp.videos.size}", 16f, false), params(18))
-            addView(label("Look at the", 24f, false), params(6))
-            addView(label(video.target.label.uppercase(), 38f, true), params(18))
+            addView(label("Areas of interest", 24f, false), params(6))
+            addView(label(video.allTargets().joinToString(" · ") { it.label.uppercase() }, 30f, true), params(18))
             addView(label(video.displayName, 15f, false), params(30))
             addView(button("Ready") { startCountdown(video) }, params(12, 64))
             addView(button("Exit experiment") { onExit?.invoke() }, params(height = 52))
@@ -205,7 +214,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             setColor(context.getColor(R.color.card_background))
             setStroke(dp(1), context.getColor(R.color.card_border))
         }
-        addView(label("VIDEO ${index + 1} · ${result.video.target.label.uppercase()}", 18f, true).apply {
+        addView(label("VIDEO ${index + 1} · ${result.video.allTargets().joinToString(" + ") { it.label.uppercase() }}", 18f, true).apply {
             gravity = Gravity.START
         }, params(5))
         addView(label(result.video.displayName, 14f, false).apply { gravity = Gravity.START }, params(9))
@@ -214,6 +223,11 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 "Tolerant ${percent(result.tolerantHits, result.validSamples)}  ·  " +
                 "Mean distance ${meanDistance.toInt()} px",
             14f,
+            false,
+        ).apply { gravity = Gravity.START }, params(10))
+        addView(label(
+            "Source frames ${frameCount(result.video)}  ·  Captured gaze samples ${result.capturedGazeSamples}  ·  Valid ${result.validSamples}",
+            13f,
             false,
         ).apply { gravity = Gravity.START }, params(10))
         addView(button("View replay, heatmap, and details") { showResultDetail(index) }, params(height = 52))
@@ -264,7 +278,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 if (!fromUser) return
                 player.seekTo(value)
                 replayTime.text = "${formatTime(value.toLong())} / ${formatTime(video.durationMs)}"
-                heatmap.setPlaybackState(value.toLong(), video.roiAt(value.toLong()))
+                heatmap.setPlaybackState(value.toLong(), video.activeAoisAt(value.toLong()))
             }
 
             override fun onStopTrackingTouch(seekBar: SeekBar) {
@@ -279,7 +293,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(12), dp(18), dp(30))
             addView(button("← Back to all videos") { showDashboard(save = false) }, params(8, 50))
-            addView(label("VIDEO ${index + 1} · ${video.target.label.uppercase()}", 22f, true), params(4))
+            addView(label("VIDEO ${index + 1} · ${video.allTargets().joinToString(" + ") { it.label.uppercase() }}", 22f, true), params(4))
             addView(label(video.displayName, 14f, false), params(10))
             addView(replayTime, params(2))
             addView(replayProgress, params(4, 42))
@@ -300,9 +314,19 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 "Average shortest distance to the exact box. Samples inside the box count as 0 px.",
             ), params(10))
             addView(metric(
+                "Source video frames",
+                frameCount(video),
+                "Frame count reported by the encoded video metadata. This is not an estimate of rendered frames.",
+            ), params(10))
+            addView(metric(
+                "Gaze samples captured",
+                result.capturedGazeSamples.toString(),
+                "All gaze predictions received while this video was playing, before scoring filters.",
+            ), params(10))
+            addView(metric(
                 "Scored samples",
                 result.validSamples.toString(),
-                "Valid gaze predictions scored after the first 500 ms of this video.",
+                "Gaze predictions after the first 500 ms with at least one visible true-label AOI.",
             ), params(10))
             addView(label(
                 "Heatmap: warmer and brighter areas received more gaze samples. The white ring is the latest gaze point; the green rectangle is the annotated target.",
@@ -327,7 +351,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                     val position = player.currentPosition.coerceAtLeast(0)
                     replayProgress.progress = position.coerceAtMost(replayProgress.max)
                     replayTime.text = "${formatTime(position.toLong())} / ${formatTime(video.durationMs)}"
-                    heatmap.setPlaybackState(position.toLong(), video.roiAt(position.toLong()))
+                    heatmap.setPlaybackState(position.toLong(), video.activeAoisAt(position.toLong()))
                 }
                 player.postDelayed(this, 33L)
             }
@@ -364,7 +388,9 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                     put(JSONObject().apply {
                         put("videoId", result.video.id)
                         put("videoName", result.video.displayName)
-                        put("target", result.video.target.name)
+                        put("targets", JSONArray(result.video.allTargets().map { it.name }))
+                        put("sourceVideoFrames", result.video.sourceFrameCount)
+                        put("capturedGazeSamples", result.capturedGazeSamples)
                         put("validSamples", result.validSamples)
                         put("strictHits", result.strictHits)
                         put("tolerantHits", result.tolerantHits)
@@ -375,9 +401,9 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         }
         File(directory, "session_summary.json").writeText(summary.toString(2))
         File(directory, "gaze_samples.csv").bufferedWriter().use { writer ->
-            writer.appendLine("video_id,video_time_ms,gaze_x_px,gaze_y_px,video_x_normalized,video_y_normalized,strict_hit,tolerant_hit,distance_px")
+            writer.appendLine("video_id,video_time_ms,gaze_x_px,gaze_y_px,video_x_normalized,video_y_normalized,strict_hit,tolerant_hit,distance_px,matched_aois")
             samples.forEach { sample ->
-                writer.appendLine("${sample.videoId},${sample.positionMs},${sample.x},${sample.y},${sample.videoX},${sample.videoY},${sample.strictHit},${sample.tolerantHit},${sample.distancePx}")
+                writer.appendLine("${sample.videoId},${sample.positionMs},${sample.x},${sample.y},${sample.videoX},${sample.videoY},${sample.strictHit},${sample.tolerantHit},${sample.distancePx},\"${sample.matchedAois}\"")
             }
         }
     }
@@ -436,6 +462,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
     }
 
     private fun percent(hit: Int, total: Int): String = if (total == 0) "--" else "%.1f%%".format(hit * 100.0 / total)
+    private fun frameCount(video: ExperimentVideo): String =
+        if (video.sourceFrameCount > 0L) video.sourceFrameCount.toString() else "Unavailable"
     private fun formatTime(ms: Long): String {
         val safe = ms.coerceAtLeast(0L)
         return "%02d:%02d.%03d".format(safe / 60_000, (safe / 1_000) % 60, safe % 1_000)

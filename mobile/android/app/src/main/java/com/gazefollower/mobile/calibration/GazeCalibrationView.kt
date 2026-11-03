@@ -20,7 +20,7 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 class GazeCalibrationView(context: Context) : View(context) {
-    enum class Stage { PREVIEW, CALIBRATION, CALIBRATION_RESULT, VIDEO_TEST, LIVE_TEST, HEATMAP_RESULT }
+    enum class Stage { PREVIEW, CALIBRATION, CALIBRATION_RESULT, VALIDATION, VALIDATION_RESULT, VIDEO_TEST, LIVE_TEST, HEATMAP_RESULT }
 
     var onStageChanged: ((Stage) -> Unit)? = null
     var onStartVideoExperiment: (() -> Unit)? = null
@@ -35,6 +35,13 @@ class GazeCalibrationView(context: Context) : View(context) {
         0.1f to 0.12f, 0.5f to 0.12f, 0.9f to 0.12f,
         0.1f to 0.5f, 0.9f to 0.5f,
         0.1f to 0.88f, 0.5f to 0.88f, 0.9f to 0.88f,
+    )
+    private val validationTargets = listOf(
+        0.5f to 0.5f,
+        0.18f to 0.20f,
+        0.82f to 0.20f,
+        0.18f to 0.80f,
+        0.82f to 0.80f,
     )
     private val samples = mutableListOf<FloatArray>()
     private val labels = mutableListOf<FloatArray>()
@@ -56,11 +63,20 @@ class GazeCalibrationView(context: Context) : View(context) {
     private var currentBodyRegion = OUTSIDE_BODY
     private val bodyRegionSamples = mutableMapOf<String, Int>()
     private var contentAlpha = 1f
+    private var validationPointIndex = 0
+    private var validationWarmupFrames = 0
+    private var validationPointSamples = 0
+    private var validationPointChangedAt = 0L
+    private var validationPreviousTarget = validationTargets.first()
+    private val validationErrors = mutableListOf<Float>()
+    private var validationHits = 0
+    private var validationPassed = false
 
     @Synchronized
     fun onGaze(result: GazeInferenceResult) {
         when (stage) {
             Stage.CALIBRATION -> collect(result.features)
+            Stage.VALIDATION -> collectValidation(result.features)
             Stage.VIDEO_TEST -> {
                 val prediction = model?.predict(result.features) ?: return
                 onVideoGaze?.invoke(prediction[0], prediction[1])
@@ -92,6 +108,58 @@ class GazeCalibrationView(context: Context) : View(context) {
             else -> Unit
         }
         postInvalidateOnAnimation()
+    }
+
+    @Synchronized
+    private fun collectValidation(features: FloatArray) {
+        if (SystemClock.uptimeMillis() - validationPointChangedAt < VALIDATION_MOVE_MS) return
+        if (validationWarmupFrames < VALIDATION_WARMUP_FRAMES) {
+            validationWarmupFrames += 1
+            return
+        }
+        val prediction = model?.predict(features) ?: return
+        val target = validationTargets[validationPointIndex]
+        val dx = prediction[0] - target.first
+        val dy = prediction[1] - target.second
+        val error = kotlin.math.sqrt(dx * dx + dy * dy)
+        validationErrors += error
+        if (error <= VALIDATION_HIT_RADIUS) validationHits += 1
+        validationPointSamples += 1
+        if (validationPointSamples < VALIDATION_SAMPLES_PER_POINT) return
+
+        validationPreviousTarget = target
+        validationPointIndex += 1
+        validationPointChangedAt = SystemClock.uptimeMillis()
+        validationWarmupFrames = 0
+        validationPointSamples = 0
+        if (validationPointIndex < validationTargets.size) return
+
+        val meanError = validationErrors.average().toFloat()
+        val hitRate = validationHits.toFloat() / validationErrors.size.coerceAtLeast(1)
+        validationPassed = meanError <= VALIDATION_MAX_MEAN_ERROR && hitRate >= VALIDATION_MIN_HIT_RATE
+        stage = Stage.VALIDATION_RESULT
+        post { transitionTo(Stage.VALIDATION_RESULT) }
+    }
+
+    @Synchronized
+    private fun startValidation() {
+        validationPointIndex = 0
+        validationWarmupFrames = 0
+        validationPointSamples = 0
+        validationPreviousTarget = validationTargets.first()
+        validationPointChangedAt = SystemClock.uptimeMillis()
+        validationErrors.clear()
+        validationHits = 0
+        validationPassed = false
+        transitionTo(Stage.VALIDATION)
+    }
+
+    private fun startConfiguredTest() {
+        val startVideo = onStartVideoExperiment
+        if (startVideo == null) startLiveTest() else {
+            transitionTo(Stage.VIDEO_TEST)
+            startVideo()
+        }
     }
 
     @Synchronized
@@ -173,13 +241,12 @@ class GazeCalibrationView(context: Context) : View(context) {
             Stage.PREVIEW -> if (primaryButton.contains(event.x, event.y)) startCalibration()
             Stage.CALIBRATION -> Unit
             Stage.CALIBRATION_RESULT -> when {
-                primaryButton.contains(event.x, event.y) -> {
-                    val startVideo = onStartVideoExperiment
-                    if (startVideo == null) startLiveTest() else {
-                        transitionTo(Stage.VIDEO_TEST)
-                        startVideo()
-                    }
-                }
+                primaryButton.contains(event.x, event.y) -> startValidation()
+                secondaryButton.contains(event.x, event.y) -> startCalibration()
+            }
+            Stage.VALIDATION -> Unit
+            Stage.VALIDATION_RESULT -> when {
+                primaryButton.contains(event.x, event.y) -> if (validationPassed) startConfiguredTest() else startValidation()
                 secondaryButton.contains(event.x, event.y) -> startCalibration()
             }
             Stage.VIDEO_TEST -> Unit
@@ -214,6 +281,8 @@ class GazeCalibrationView(context: Context) : View(context) {
             Stage.PREVIEW -> drawPreviewControls(canvas)
             Stage.CALIBRATION -> drawCalibration(canvas)
             Stage.CALIBRATION_RESULT -> drawCalibrationResult(canvas)
+            Stage.VALIDATION -> drawValidation(canvas)
+            Stage.VALIDATION_RESULT -> drawValidationResult(canvas)
             Stage.VIDEO_TEST -> drawStageBackground(canvas)
             Stage.LIVE_TEST -> drawBodyTest(canvas, false)
             Stage.HEATMAP_RESULT -> drawBodyTest(canvas, true)
@@ -287,7 +356,62 @@ class GazeCalibrationView(context: Context) : View(context) {
 
         primaryButton.set(width * 0.16f, height * 0.57f, width * 0.84f, height * 0.57f + 88f)
         secondaryButton.set(width * 0.16f, height * 0.57f + 108f, width * 0.84f, height * 0.57f + 196f)
-        drawButton(canvas, primaryButton, if (onStartVideoExperiment == null) "Start body Live Test" else "Start video experiment", true)
+        drawButton(canvas, primaryButton, "Validate calibration", true)
+        drawButton(canvas, secondaryButton, "Recalibrate", false)
+    }
+
+    private fun drawValidation(canvas: Canvas) {
+        drawStageBackground(canvas)
+        drawHeader(canvas, "GAZE VALIDATION", "Look steadily at each target")
+        val target = validationTargets[validationPointIndex.coerceAtMost(validationTargets.lastIndex)]
+        val elapsed = SystemClock.uptimeMillis() - validationPointChangedAt
+        val progress = (elapsed / VALIDATION_MOVE_MS.toFloat()).coerceIn(0f, 1f)
+        val eased = 1f - (1f - progress).pow(3)
+        val x = (validationPreviousTarget.first + (target.first - validationPreviousTarget.first) * eased) * width
+        val y = (validationPreviousTarget.second + (target.second - validationPreviousTarget.second) * eased) * height
+        val pulse = ((sin(SystemClock.uptimeMillis() / 180.0 * PI) + 1.0) * 0.5).toFloat()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 6f
+        paint.color = 0x6638BDF8
+        canvas.drawCircle(x, y, 46f + pulse * 5f, paint)
+        paint.style = Paint.Style.FILL
+        paint.color = Color.WHITE
+        canvas.drawCircle(x, y, 25f, paint)
+        paint.color = 0xFF22C55E.toInt()
+        canvas.drawCircle(x, y, 9f, paint)
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = 25f
+        paint.color = Color.WHITE
+        canvas.drawText("Validation point ${validationPointIndex + 1} of ${validationTargets.size}", width / 2f, height - 92f, paint)
+        paint.textSize = 18f
+        paint.color = 0xFF94A3B8.toInt()
+        canvas.drawText("This stage checks calibration before the videos begin", width / 2f, height - 58f, paint)
+        postInvalidateOnAnimation()
+    }
+
+    private fun drawValidationResult(canvas: Canvas) {
+        drawStageBackground(canvas)
+        val total = validationErrors.size.coerceAtLeast(1)
+        val hitRate = validationHits * 100f / total
+        val meanError = validationErrors.average().let { if (it.isNaN()) 0.0 else it } * 100.0
+        paint.textAlign = Paint.Align.CENTER
+        paint.color = if (validationPassed) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt()
+        paint.textSize = 70f
+        canvas.drawText(if (validationPassed) "✓" else "!", width / 2f, height * 0.27f, paint)
+        paint.color = Color.WHITE
+        paint.textSize = 34f
+        canvas.drawText(if (validationPassed) "Validation passed" else "Validation needs attention", width / 2f, height * 0.35f, paint)
+        paint.color = 0xFFCBD5E1.toInt()
+        paint.textSize = 21f
+        canvas.drawText("Hit rate %.1f%% · Mean normalized error %.1f%%".format(hitRate, meanError), width / 2f, height * 0.41f, paint)
+        paint.color = 0xFF94A3B8.toInt()
+        paint.textSize = 17f
+        canvas.drawText("Pass: ≥70% within 12% screen diagonal and mean error ≤15%", width / 2f, height * 0.46f, paint)
+        primaryButton.set(width * 0.16f, height * 0.57f, width * 0.84f, height * 0.57f + 88f)
+        secondaryButton.set(width * 0.16f, height * 0.57f + 108f, width * 0.84f, height * 0.57f + 196f)
+        drawButton(canvas, primaryButton, if (validationPassed) {
+            if (onStartVideoExperiment == null) "Start body Live Test" else "Start video experiment"
+        } else "Repeat validation", true)
         drawButton(canvas, secondaryButton, "Recalibrate", false)
     }
 
@@ -481,6 +605,12 @@ class GazeCalibrationView(context: Context) : View(context) {
         private const val WARMUP_FRAMES = 3
         private const val SAMPLES_PER_POINT = 8
         private const val TARGET_MOVE_MS = 360L
+        private const val VALIDATION_WARMUP_FRAMES = 3
+        private const val VALIDATION_SAMPLES_PER_POINT = 8
+        private const val VALIDATION_MOVE_MS = 500L
+        private const val VALIDATION_HIT_RADIUS = 0.12f
+        private const val VALIDATION_MAX_MEAN_ERROR = 0.15f
+        private const val VALIDATION_MIN_HIT_RATE = 0.70f
         private const val OUTSIDE_BODY = "Outside body"
         private const val OUTSIDE_SCREEN = "Outside screen"
     }

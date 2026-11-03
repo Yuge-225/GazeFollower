@@ -15,23 +15,30 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Spinner
-import android.widget.ArrayAdapter
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import com.gazefollower.mobile.experiment.BodyTarget
+import com.gazefollower.mobile.experiment.AoiTrack
 import com.gazefollower.mobile.experiment.AspectFitFrameLayout
 import com.gazefollower.mobile.experiment.Experiment
 import com.gazefollower.mobile.experiment.ExperimentStore
 import com.gazefollower.mobile.experiment.ExperimentVideo
+import com.gazefollower.mobile.experiment.EditableRoi
 import com.gazefollower.mobile.experiment.RoiEditorView
 import com.gazefollower.mobile.experiment.RoiKeyframe
+import com.gazefollower.mobile.experiment.NormalizedRoi
 import kotlin.math.roundToLong
 
 class AuthorExperimentActivity : ComponentActivity() {
+    private data class BoxTrack(
+        val id: String,
+        val keyframes: MutableList<RoiKeyframe>,
+        val roiAt: (Long) -> NormalizedRoi?,
+    )
+
     private lateinit var store: ExperimentStore
     private lateinit var experiment: Experiment
     private val density by lazy { resources.displayMetrics.density }
@@ -86,7 +93,8 @@ class AuthorExperimentActivity : ComponentActivity() {
     private fun showAuthorHome() {
         releaseEditorResources()
         val annotatedCount = experiment.videos.count { video ->
-            video.target.availableForAuthoring && video.keyframes.any { frame -> frame.visible && frame.roi != null }
+            video.keyframes.any { frame -> frame.visible && frame.roi != null } &&
+                video.additionalAois.all { track -> track.keyframes.any { it.visible && it.roi != null } }
         }
         val readyToPublish = experiment.videos.isNotEmpty() && annotatedCount == experiment.videos.size
         val content = LinearLayout(this).apply {
@@ -116,68 +124,27 @@ class AuthorExperimentActivity : ComponentActivity() {
             addView(title("Step 2 · Label every video", 21f), matchWrap(6))
             addView(body(
                 if (experiment.videos.isEmpty()) {
-                    "Import videos first. Then choose a target body region and draw its bounding box on the video."
+                    "Import videos first. Then open each video editor to add and label one or more bounding boxes."
                 } else {
-                    "$annotatedCount of ${experiment.videos.size} videos annotated. Add keyframes whenever the target box moves or disappears."
+                    "$annotatedCount of ${experiment.videos.size} videos ready. Bounding boxes are added and edited inside each video editor."
                 }
             ), matchWrap(14))
         }
 
         experiment.videos.forEachIndexed { index, video ->
             val hasAnnotation = video.keyframes.any { frame -> frame.visible && frame.roi != null }
-            val annotationReady = video.target.availableForAuthoring && hasAnnotation
+            val annotationReady = hasAnnotation &&
+                video.additionalAois.all { track -> track.keyframes.any { it.visible && it.roi != null } }
             val videoCard = card().apply {
                 addView(body("VIDEO ${index + 1} OF ${experiment.videos.size}"), matchWrap(5))
                 addView(title(video.displayName, 17f), matchWrap(6))
                 addView(body("${formatTime(video.durationMs)} · ${video.width}×${video.height}"), matchWrap(12))
-                addView(body("1 · Choose the target body region"), matchWrap(4))
-                val targetChoices = BodyTarget.authorChoices
-                var suppressSelection = false
-                val spinner = Spinner(this@AuthorExperimentActivity).apply {
-                    adapter = ArrayAdapter(
-                        this@AuthorExperimentActivity,
-                        android.R.layout.simple_spinner_dropdown_item,
-                        listOf("Select body region…") + targetChoices.map { it.label },
-                    )
-                    setSelection(targetChoices.indexOf(video.target).let { if (it < 0) 0 else it + 1 })
-                    onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-                        override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-                        override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                            if (suppressSelection || position == 0) return
-                            val next = targetChoices[position - 1]
-                            if (video.target == next) return
-                            if (hasAnnotation) {
-                                AlertDialog.Builder(this@AuthorExperimentActivity)
-                                    .setTitle("Change target region?")
-                                    .setMessage("Changing the target makes the existing boxes invalid. The saved annotation for this video will be cleared.")
-                                    .setPositiveButton("Change and clear") { _, _ ->
-                                        video.target = next
-                                        video.keyframes.clear()
-                                        markDraftAndSave()
-                                        showAuthorHome()
-                                    }
-                                    .setNegativeButton("Cancel") { _, _ ->
-                                        suppressSelection = true
-                                        setSelection(targetChoices.indexOf(video.target).let { if (it < 0) 0 else it + 1 })
-                                        suppressSelection = false
-                                    }
-                                    .show()
-                            } else {
-                                video.target = next
-                                markDraftAndSave()
-                                showAuthorHome()
-                            }
-                        }
-                    }
-                }
-                addView(spinner, matchWrap(10, 52))
-                addView(body("2 · Draw and review the bounding boxes"), matchWrap(5))
+                addView(body("Bounding boxes: ${1 + video.additionalAois.size}"), matchWrap(6))
                 addView(annotationBadge(video, annotationReady), matchWrap(8))
                 addView(action(
-                    if (annotationReady) "Review or edit annotation" else "Label this video",
+                    if (annotationReady) "Review or edit boxes" else "Open box editor",
                     primary = true,
-                    enabled = video.target.availableForAuthoring,
-                ) { showEditor(video) }, matchWrap(8, 54))
+                ) { showMultiBoxEditor(video) }, matchWrap(8, 54))
                 addView(action("Remove video") {
                     store.deleteVideo(video)
                     experiment.videos.remove(video)
@@ -205,14 +172,278 @@ class AuthorExperimentActivity : ComponentActivity() {
         })
     }
 
-    private fun showEditor(video: ExperimentVideo) {
+    private fun showMultiBoxEditor(video: ExperimentVideo) {
         releaseEditorResources()
+        var selectedId = PRIMARY_BOX_ID
+        var editTimestamp = 0L
+        var lastPlaybackPosition = 0L
+        var completed = false
+        var userSeeking = false
+        var preparedPlayer: MediaPlayer? = null
+
+        fun tracks(): List<BoxTrack> = buildList {
+            add(BoxTrack(PRIMARY_BOX_ID, video.keyframes, video::roiAt))
+            video.additionalAois.forEach { track -> add(BoxTrack(track.id, track.keyframes, track::roiAt)) }
+        }
+
+        fun boxNumber(id: String): Int = tracks().indexOfFirst { it.id == id }.coerceAtLeast(0) + 1
+        fun defaultBox(index: Int): NormalizedRoi {
+            val column = index % 3
+            val row = (index / 3) % 4
+            val left = 0.08f + column * 0.20f
+            val top = 0.12f + row * 0.14f
+            return NormalizedRoi(left, top, (left + 0.26f).coerceAtMost(0.96f), (top + 0.22f).coerceAtMost(0.94f))
+        }
+        fun boxesAt(timestamp: Long): List<EditableRoi> = tracks().mapIndexed { index, binding ->
+            EditableRoi(
+                id = binding.id,
+                label = "Box ${index + 1}",
+                roi = binding.roiAt(timestamp),
+                color = BOX_COLORS[index % BOX_COLORS.size],
+            )
+        }
+        fun allBoxesInitialized(): Boolean = tracks().all { binding ->
+            binding.keyframes.any { it.visible && it.roi != null }
+        }
+
         val videoView = VideoView(this).apply { setVideoPath(video.localPath) }
         editorVideo = videoView
         val roiView = RoiEditorView(this).apply {
             setVideoSize(video.width, video.height)
-            setRoi(video.roiAt(0L))
-            isEnabled = video.keyframes.isEmpty()
+            setRois(boxesAt(0L), selectedId)
+            isEnabled = false
+        }
+        val videoStage = AspectFitFrameLayout(this, video.width, video.height).apply {
+            setBackgroundColor(0xFF05080D.toInt())
+            addView(videoView, FrameLayout.LayoutParams(-1, -1))
+            addView(roiView, FrameLayout.LayoutParams(-1, -1))
+        }
+        val loadingOverlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(20), dp(14), dp(20), dp(14))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(0xD9141B26.toInt())
+            }
+            addView(ProgressBar(this@AuthorExperimentActivity).apply { isIndeterminate = true }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(body("Loading frame…").apply { gravity = Gravity.CENTER })
+            visibility = View.GONE
+        }
+        val player = FrameLayout(this).apply {
+            setBackgroundColor(0xFF05080D.toInt())
+            addView(videoStage, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+            addView(loadingOverlay, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        }
+        val selectedBoxLabel = body("Selected: Box 1 · drag box to move · drag corner to resize").apply {
+            gravity = Gravity.CENTER
+            setTextColor(BOX_COLORS.first())
+        }
+        val time = body("00:00.000 / ${formatTime(video.durationMs)}").apply { gravity = Gravity.CENTER }
+        val progress = SeekBar(this).apply {
+            max = video.durationMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
+        }
+        val status = body(if (video.keyframes.isEmpty()) {
+            "Paused · Tap the video to place Box 1"
+        } else {
+            "Starting replay · all boxes remain visible"
+        }).apply { gravity = Gravity.CENTER }
+        lateinit var playPauseButton: Button
+        lateinit var deleteBoxButton: Button
+
+        fun updateSelection(id: String) {
+            selectedId = id
+            val index = boxNumber(id) - 1
+            selectedBoxLabel.text = "Selected: Box ${index + 1} · drag box to move · drag corner to resize"
+            selectedBoxLabel.setTextColor(BOX_COLORS[index % BOX_COLORS.size])
+            deleteBoxButton.isEnabled = id != PRIMARY_BOX_ID
+        }
+        fun refreshBoxes(timestamp: Long) {
+            roiView.setRois(boxesAt(timestamp), selectedId)
+        }
+        fun pauseForEditing(timestampMs: Long = lastPlaybackPosition, seekPlayer: Boolean = false) {
+            val timestamp = timestampMs.coerceIn(0L, video.durationMs)
+            videoView.pause()
+            editTimestamp = timestamp
+            lastPlaybackPosition = timestamp
+            completed = timestamp >= video.durationMs
+            progress.progress = timestamp.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            time.text = "${formatTime(timestamp)} / ${formatTime(video.durationMs)}"
+            refreshBoxes(timestamp)
+            if (seekPlayer) {
+                preparedPlayer?.seekTo(timestamp, MediaPlayer.SEEK_CLOSEST) ?: videoView.seekTo(timestamp.toInt())
+            }
+            roiView.isEnabled = true
+            playPauseButton.text = when {
+                completed -> "Replay from start"
+                allBoxesInitialized() -> "Resume playback"
+                else -> "Place missing box"
+            }
+            status.text = "Paused at ${formatTime(timestamp)} · tap a box to select it, then adjust"
+        }
+        fun resumePlayback(fromStart: Boolean = false) {
+            if (!allBoxesInitialized()) {
+                toast("Place every bounding box before playback")
+                return
+            }
+            if (fromStart) {
+                videoView.pause()
+                videoView.seekTo(1)
+                editTimestamp = 0L
+                lastPlaybackPosition = 0L
+                progress.progress = 0
+                refreshBoxes(0L)
+            }
+            completed = false
+            roiView.isEnabled = false
+            playPauseButton.text = "Pause & edit boxes"
+            status.text = "Playing · all colored boxes follow their saved keyframes"
+            if (fromStart) videoView.postDelayed({ videoView.start() }, REPLAY_SEEK_DELAY_MS) else videoView.start()
+        }
+
+        roiView.onSelectionChanged = ::updateSelection
+        roiView.onMultiRoiCommitted = { id, roi ->
+            val binding = tracks().firstOrNull { it.id == id }
+            if (binding != null) {
+                val timestamp = editTimestamp.coerceIn(0L, video.durationMs)
+                binding.keyframes.removeAll { kotlin.math.abs(it.timestampMs - timestamp) <= KEYFRAME_MERGE_MS }
+                binding.keyframes += RoiKeyframe(timestamp, true, roi)
+                binding.keyframes.sortBy { it.timestampMs }
+                markDraftAndSave()
+                refreshBoxes(timestamp)
+                playPauseButton.isEnabled = allBoxesInitialized()
+                status.text = "Box ${boxNumber(id)} saved at ${formatTime(timestamp)}"
+            }
+        }
+
+        playPauseButton = action(
+            if (allBoxesInitialized()) "Pause & edit boxes" else "Place missing box",
+            primary = true,
+            enabled = allBoxesInitialized(),
+        ) {
+            when {
+                completed -> resumePlayback(fromStart = true)
+                videoView.isPlaying -> pauseForEditing()
+                else -> resumePlayback()
+            }
+        }
+        val addBoxButton = action("+ Add bounding box", primary = true) {
+            videoView.pause()
+            val newTrack = AoiTrack(target = video.target)
+            val index = tracks().size
+            newTrack.keyframes += RoiKeyframe(editTimestamp, true, defaultBox(index))
+            video.additionalAois += newTrack
+            selectedId = newTrack.id
+            markDraftAndSave()
+            refreshBoxes(editTimestamp)
+            updateSelection(selectedId)
+            roiView.isEnabled = true
+            playPauseButton.isEnabled = true
+            playPauseButton.text = "Resume playback"
+            status.text = "Box ${index + 1} added · drag it into position"
+        }
+        deleteBoxButton = action("Delete selected box", enabled = false) {
+            if (selectedId == PRIMARY_BOX_ID) return@action
+            val selectedTrack = video.additionalAois.firstOrNull { it.id == selectedId } ?: return@action
+            AlertDialog.Builder(this@AuthorExperimentActivity)
+                .setTitle("Delete Box ${boxNumber(selectedId)}?")
+                .setMessage("All saved positions for this box will be removed.")
+                .setPositiveButton("Delete") { _, _ ->
+                    video.additionalAois.remove(selectedTrack)
+                    selectedId = PRIMARY_BOX_ID
+                    markDraftAndSave()
+                    refreshBoxes(editTimestamp)
+                    updateSelection(selectedId)
+                    status.text = "Bounding box deleted"
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        progress.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onStartTrackingTouch(seekBar: SeekBar) {
+                userSeeking = true
+                videoView.pause()
+                roiView.isEnabled = false
+                loadingOverlay.visibility = View.VISIBLE
+                status.text = "Loading frame…"
+            }
+            override fun onProgressChanged(seekBar: SeekBar, value: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                val timestamp = value.toLong().coerceIn(0L, video.durationMs)
+                editTimestamp = timestamp
+                lastPlaybackPosition = timestamp
+                time.text = "${formatTime(timestamp)} / ${formatTime(video.durationMs)}"
+                refreshBoxes(timestamp)
+                preparedPlayer?.seekTo(timestamp, MediaPlayer.SEEK_CLOSEST) ?: videoView.seekTo(value)
+            }
+            override fun onStopTrackingTouch(seekBar: SeekBar) {
+                userSeeking = false
+                pauseForEditing(seekBar.progress.toLong(), seekPlayer = true)
+                loadingOverlay.postDelayed({ if (!userSeeking) loadingOverlay.visibility = View.GONE }, SEEK_LOADING_FALLBACK_MS)
+            }
+        })
+
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(16))
+            setBackgroundColor(getColor(R.color.background))
+            addView(title("Bounding-box editor", 22f), matchWrap(3))
+            addView(body("All boxes are shown together in different colors. Tap a box to select it."), matchWrap(6))
+            addView(selectedBoxLabel, matchWrap(6))
+            addView(addBoxButton, matchWrap(5, 52))
+            addView(deleteBoxButton, matchWrap(8, 48))
+            addView(time, matchWrap())
+            addView(body("Drag the progress bar to inspect and edit any frame"), matchWrap(2))
+            addView(progress, matchWrap(6, 40))
+            addView(status, matchWrap(10))
+            addView(playPauseButton, matchWrap(8, 56))
+            addView(action("Done") { showAuthorHome() }, matchWrap(height = 52))
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(getColor(R.color.background))
+            addView(player, LinearLayout.LayoutParams(-1, 0, 0.56f))
+            addView(ScrollView(this@AuthorExperimentActivity).apply { addView(controls) }, LinearLayout.LayoutParams(-1, 0, 0.44f))
+        }
+        setContentView(root)
+
+        videoView.setOnPreparedListener {
+            preparedPlayer = it
+            it.isLooping = false
+            it.setOnSeekCompleteListener { if (!userSeeking) loadingOverlay.visibility = View.GONE }
+            videoView.seekTo(1)
+            if (allBoxesInitialized()) resumePlayback(fromStart = true) else pauseForEditing(0L, seekPlayer = true)
+        }
+        videoView.setOnCompletionListener { pauseForEditing(video.durationMs) }
+        stopEditorTicker()
+        editorTicker = object : Runnable {
+            override fun run() {
+                if (!userSeeking && !completed && videoView.isPlaying) {
+                    val position = videoView.currentPosition.coerceAtLeast(0)
+                    val timestamp = position.toLong()
+                    lastPlaybackPosition = timestamp
+                    editTimestamp = timestamp
+                    progress.progress = position.coerceAtMost(progress.max)
+                    time.text = "${formatTime(timestamp)} / ${formatTime(video.durationMs)}"
+                    refreshBoxes(timestamp)
+                }
+                videoView.postDelayed(this, 33L)
+            }
+        }.also { videoView.post(it) }
+    }
+
+    private fun showEditor(video: ExperimentVideo, track: AoiTrack? = null) {
+        releaseEditorResources()
+        val target = track?.target ?: video.target
+        val keyframes = track?.keyframes ?: video.keyframes
+        fun roiAt(timestampMs: Long) = track?.roiAt(timestampMs) ?: video.roiAt(timestampMs)
+        val videoView = VideoView(this).apply { setVideoPath(video.localPath) }
+        editorVideo = videoView
+        val roiView = RoiEditorView(this).apply {
+            setVideoSize(video.width, video.height)
+            setRoi(roiAt(0L))
+            isEnabled = keyframes.isEmpty()
         }
         val videoStage = AspectFitFrameLayout(this, video.width, video.height).apply {
             setBackgroundColor(0xFF05080D.toInt())
@@ -255,7 +486,7 @@ class AuthorExperimentActivity : ComponentActivity() {
             max = video.durationMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
         }
         val status = body(
-            if (video.keyframes.isEmpty()) {
+            if (keyframes.isEmpty()) {
                 "Paused · Tap the target and adjust the first box"
             } else {
                 "Starting playback · Current box remains valid until you change it"
@@ -276,7 +507,7 @@ class AuthorExperimentActivity : ComponentActivity() {
             completed = timestamp >= video.durationMs
             progress.progress = timestamp.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             time.text = "${formatTime(timestamp)} / ${formatTime(video.durationMs)}"
-            roiView.setRoi(video.roiAt(timestamp))
+            roiView.setRoi(roiAt(timestamp))
             if (seekPlayer) {
                 preparedPlayer?.seekTo(timestamp, MediaPlayer.SEEK_CLOSEST)
                     ?: videoView.seekTo(timestamp.toInt())
@@ -284,7 +515,7 @@ class AuthorExperimentActivity : ComponentActivity() {
             roiView.isEnabled = true
             playPauseButton.text = when {
                 completed -> "Replay from start"
-                video.keyframes.isEmpty() -> "Start playback"
+                keyframes.isEmpty() -> "Start playback"
                 else -> "Resume playback"
             }
             status.text = if (completed) {
@@ -295,7 +526,7 @@ class AuthorExperimentActivity : ComponentActivity() {
         }
 
         fun resumePlayback(fromStart: Boolean = false) {
-            if (video.keyframes.none { it.visible && it.roi != null }) {
+            if (keyframes.none { it.visible && it.roi != null }) {
                 toast("Set the first bounding box before playback")
                 return
             }
@@ -306,7 +537,7 @@ class AuthorExperimentActivity : ComponentActivity() {
                 lastPlaybackPosition = 0L
                 progress.progress = 0
                 time.text = "00:00.000 / ${formatTime(video.durationMs)}"
-                roiView.setRoi(video.roiAt(0L))
+                roiView.setRoi(roiAt(0L))
             }
             completed = false
             roiView.isEnabled = false
@@ -323,18 +554,18 @@ class AuthorExperimentActivity : ComponentActivity() {
 
         roiView.onRoiCommitted = { roi ->
             val timestamp = editTimestamp.coerceIn(0L, video.durationMs)
-            video.keyframes.removeAll { kotlin.math.abs(it.timestampMs - timestamp) <= KEYFRAME_MERGE_MS }
-            video.keyframes += RoiKeyframe(timestamp, true, roi)
-            video.keyframes.sortBy { it.timestampMs }
+            keyframes.removeAll { kotlin.math.abs(it.timestampMs - timestamp) <= KEYFRAME_MERGE_MS }
+            keyframes += RoiKeyframe(timestamp, true, roi)
+            keyframes.sortBy { it.timestampMs }
             markDraftAndSave()
             playPauseButton.isEnabled = true
             status.text = "Saved at ${formatTime(timestamp)} · This box remains active until you edit again"
         }
 
         playPauseButton = action(
-            if (video.keyframes.isEmpty()) "Start playback" else "Pause & edit",
+            if (keyframes.isEmpty()) "Start playback" else "Pause & edit",
             primary = true,
-            enabled = video.keyframes.any { it.visible && it.roi != null },
+            enabled = keyframes.any { it.visible && it.roi != null },
         ) {
             when {
                 completed -> resumePlayback(fromStart = true)
@@ -358,7 +589,7 @@ class AuthorExperimentActivity : ComponentActivity() {
                 editTimestamp = timestamp
                 lastPlaybackPosition = timestamp
                 time.text = "${formatTime(timestamp)} / ${formatTime(video.durationMs)}"
-                roiView.setRoi(video.roiAt(timestamp))
+                roiView.setRoi(roiAt(timestamp))
                 preparedPlayer?.seekTo(value.toLong(), MediaPlayer.SEEK_CLOSEST)
                     ?: videoView.seekTo(value)
             }
@@ -376,8 +607,82 @@ class AuthorExperimentActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(10), dp(14), dp(16))
             setBackgroundColor(getColor(R.color.background))
-            addView(title("Annotate while playing · ${video.target.label}", 22f), matchWrap(4))
-            addView(body("If the box becomes inaccurate, pause, adjust it, then resume. Changes save automatically."), matchWrap(8))
+            addView(body("CURRENT AOI · ${target.label.uppercase()} · ${video.allTargets().size} TOTAL"), matchWrap(3))
+            addView(title("Edit one AOI at a time", 22f), matchWrap(4))
+            addView(body("Play the video. When this box is inaccurate, pause, adjust it, and resume. Every adjustment saves automatically."), matchWrap(8))
+            addView(action("Switch AOI") {
+                val tracks = listOf<AoiTrack?>(null) + video.additionalAois
+                val labels = tracks.map { candidate -> candidate?.target?.label ?: video.target.label }
+                AlertDialog.Builder(this@AuthorExperimentActivity)
+                    .setTitle("Choose an AOI to edit")
+                    .setItems(labels.toTypedArray()) { _, index -> showEditor(video, tracks[index]) }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }, matchWrap(5, 48))
+            addView(action(
+                "+ Add another AOI",
+                primary = true,
+                enabled = video.allTargets().size < BodyTarget.authorChoices.size,
+            ) {
+                val choices = BodyTarget.authorChoices.filter { it !in video.allTargets() }
+                if (choices.isEmpty()) {
+                    toast("All available body regions are already configured")
+                } else {
+                    AlertDialog.Builder(this@AuthorExperimentActivity)
+                        .setTitle("Add an area of interest")
+                        .setMessage("Choose the body region for the new independent bounding box.")
+                        .setItems(choices.map { it.label }.toTypedArray()) { _, index ->
+                            val newTrack = AoiTrack(target = choices[index])
+                            video.additionalAois += newTrack
+                            markDraftAndSave()
+                            showEditor(video, newTrack)
+                            toast("${newTrack.target.label} AOI added · draw its first box")
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            }, matchWrap(5, 52))
+            addView(action("Change current AOI type") {
+                val choices = BodyTarget.authorChoices.filter { it == target || it !in video.allTargets() }
+                AlertDialog.Builder(this@AuthorExperimentActivity)
+                    .setTitle("Change ${target.label} AOI")
+                    .setItems(choices.map { it.label }.toTypedArray()) { _, index ->
+                        val next = choices[index]
+                        if (next == target) return@setItems
+                        fun applyChange() {
+                            if (track == null) video.target = next else track.target = next
+                            keyframes.clear()
+                            markDraftAndSave()
+                            showEditor(video, track)
+                        }
+                        if (keyframes.isEmpty()) {
+                            applyChange()
+                        } else {
+                            AlertDialog.Builder(this@AuthorExperimentActivity)
+                                .setTitle("Clear saved boxes?")
+                                .setMessage("Changing the AOI type clears this AOI's saved bounding boxes.")
+                                .setPositiveButton("Change and clear") { _, _ -> applyChange() }
+                                .setNegativeButton("Cancel", null)
+                                .show()
+                        }
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }, matchWrap(5, 48))
+            if (track != null) {
+                addView(action("Delete current AOI") {
+                    AlertDialog.Builder(this@AuthorExperimentActivity)
+                        .setTitle("Delete ${track.target.label} AOI?")
+                        .setMessage("Its saved bounding boxes will be removed from this video.")
+                        .setPositiveButton("Delete") { _, _ ->
+                            video.additionalAois.remove(track)
+                            markDraftAndSave()
+                            showEditor(video)
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }, matchWrap(8, 48))
+            }
             addView(time, matchWrap())
             addView(body("Replay progress · Drag to locate a frame, then redraw the box"), matchWrap(2))
             addView(progress, matchWrap(6, 40))
@@ -388,8 +693,11 @@ class AuthorExperimentActivity : ComponentActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(getColor(R.color.background))
-            addView(player, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(controls, LinearLayout.LayoutParams(-1, -2))
+            addView(player, LinearLayout.LayoutParams(-1, 0, 0.52f))
+            addView(
+                ScrollView(this@AuthorExperimentActivity).apply { addView(controls) },
+                LinearLayout.LayoutParams(-1, 0, 0.48f),
+            )
         }
         setContentView(root)
         videoView.setOnPreparedListener {
@@ -399,7 +707,7 @@ class AuthorExperimentActivity : ComponentActivity() {
                 if (!userSeeking) loadingOverlay.visibility = View.GONE
             }
             videoView.seekTo(1)
-            if (video.keyframes.isEmpty()) {
+            if (keyframes.isEmpty()) {
                 pauseForEditing(0L, seekPlayer = true)
             } else {
                 resumePlayback(fromStart = true)
@@ -414,6 +722,7 @@ class AuthorExperimentActivity : ComponentActivity() {
             roiView = roiView,
             progress = progress,
             video = video,
+            roiAt = ::roiAt,
             shouldUpdate = { !userSeeking && !completed },
             onPosition = { lastPlaybackPosition = it },
         )
@@ -425,6 +734,7 @@ class AuthorExperimentActivity : ComponentActivity() {
         roiView: RoiEditorView,
         progress: SeekBar,
         video: ExperimentVideo,
+        roiAt: (Long) -> com.gazefollower.mobile.experiment.NormalizedRoi?,
         shouldUpdate: () -> Boolean,
         onPosition: (Long) -> Unit,
     ) {
@@ -437,7 +747,7 @@ class AuthorExperimentActivity : ComponentActivity() {
                     onPosition(timestamp)
                     progress.progress = position.coerceAtMost(progress.max)
                     time.text = "${formatTime(timestamp)} / ${formatTime(video.durationMs)}"
-                    if (videoView.isPlaying) roiView.setRoi(video.roiAt(timestamp))
+                    if (videoView.isPlaying) roiView.setRoi(roiAt(timestamp))
                 }
                 videoView.postDelayed(this, 33L)
             }
@@ -459,10 +769,13 @@ class AuthorExperimentActivity : ComponentActivity() {
     private fun publish() {
         val error = when {
             experiment.videos.isEmpty() -> "Import at least one video"
-            experiment.videos.any { !it.target.availableForAuthoring } ->
-                "Choose one of the five current body regions for every video"
-            experiment.videos.any { it.keyframes.none { frame -> frame.visible && frame.roi != null } } ->
-                "Every video needs at least one visible ROI keyframe"
+            experiment.videos.any { video -> video.allTargets().any { !it.availableForAuthoring } } ->
+                "Choose one of the five current body regions for every AOI"
+            experiment.videos.any { video ->
+                video.keyframes.none { frame -> frame.visible && frame.roi != null } ||
+                    video.additionalAois.any { track -> track.keyframes.none { it.visible && it.roi != null } }
+            } ->
+                "Every configured AOI needs at least one visible ROI keyframe"
             else -> null
         }
         if (error != null) {
@@ -496,6 +809,8 @@ class AuthorExperimentActivity : ComponentActivity() {
                 video.width = rawWidth
                 video.height = rawHeight
             }
+            video.sourceFrameCount = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)
+                ?.toLongOrNull() ?: 0L
         } finally {
             retriever.release()
         }
@@ -548,10 +863,13 @@ class AuthorExperimentActivity : ComponentActivity() {
     }
 
     private fun annotationBadge(video: ExperimentVideo, ready: Boolean) = TextView(this).apply {
+        val labeledCount = (if (video.keyframes.any { it.visible && it.roi != null }) 1 else 0) +
+            video.additionalAois.count { track -> track.keyframes.any { it.visible && it.roi != null } }
+        val totalCount = 1 + video.additionalAois.size
         text = when {
-            ready -> "✓ LABELED · ${video.target.label} · ${video.keyframes.size} saved box changes"
+            ready -> "✓ READY · $labeledCount of $totalCount boxes labeled"
             !video.target.availableForAuthoring -> "! ACTION REQUIRED · Select a new body region"
-            else -> "○ NOT LABELED · Target: ${video.target.label}"
+            else -> "○ NEEDS LABELING · $labeledCount of $totalCount boxes labeled"
         }
         textSize = 14f
         setTextColor(if (ready) 0xFFB8F5CD.toInt() else 0xFFFFD3A1.toInt())
@@ -576,6 +894,17 @@ class AuthorExperimentActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val PRIMARY_BOX_ID = "primary"
+        private val BOX_COLORS = intArrayOf(
+            0xFF22C55E.toInt(),
+            0xFF38BDF8.toInt(),
+            0xFFF97316.toInt(),
+            0xFFA855F7.toInt(),
+            0xFFF43F5E.toInt(),
+            0xFFEAB308.toInt(),
+            0xFF14B8A6.toInt(),
+            0xFF6366F1.toInt(),
+        )
         private const val MAX_VIDEOS = 5
         private const val KEYFRAME_MERGE_MS = 50L
         private const val REPLAY_SEEK_DELAY_MS = 180L

@@ -2,6 +2,7 @@ package com.gazefollower.mobile.experiment
 
 import android.content.Context
 import android.net.Uri
+import android.media.MediaMetadataRetriever
 import android.provider.OpenableColumns
 import org.json.JSONArray
 import org.json.JSONObject
@@ -49,13 +50,8 @@ data class RoiKeyframe(
     val roi: NormalizedRoi?,
 )
 
-data class ExperimentVideo(
-    val id: String,
-    var displayName: String,
-    val localPath: String,
-    var durationMs: Long,
-    var width: Int,
-    var height: Int,
+data class AoiTrack(
+    val id: String = UUID.randomUUID().toString(),
     var target: BodyTarget,
     val keyframes: MutableList<RoiKeyframe> = mutableListOf(),
 ) {
@@ -65,6 +61,39 @@ data class ExperimentVideo(
         val active = ordered.lastOrNull { it.timestampMs <= timestampMs } ?: ordered.first()
         return if (active.visible) active.roi else null
     }
+}
+
+data class ExperimentVideo(
+    val id: String,
+    var displayName: String,
+    val localPath: String,
+    var durationMs: Long,
+    var width: Int,
+    var height: Int,
+    var sourceFrameCount: Long = 0L,
+    var target: BodyTarget,
+    val keyframes: MutableList<RoiKeyframe> = mutableListOf(),
+    val additionalAois: MutableList<AoiTrack> = mutableListOf(),
+) {
+    fun roiAt(timestampMs: Long): NormalizedRoi? {
+        val ordered = keyframes.sortedBy { it.timestampMs }
+        if (ordered.isEmpty()) return null
+        val active = ordered.lastOrNull { it.timestampMs <= timestampMs } ?: ordered.first()
+        return if (active.visible) active.roi else null
+    }
+
+
+    fun activeAoisAt(timestampMs: Long): List<Pair<BodyTarget, NormalizedRoi>> = buildList {
+        roiAt(timestampMs)?.let { add(target to it) }
+        additionalAois.forEach { track ->
+            track.roiAt(timestampMs)?.let { add(track.target to it) }
+        }
+    }
+
+    fun allTargets(): List<BodyTarget> = buildList {
+        add(target)
+        addAll(additionalAois.map { it.target })
+    }.distinct()
 }
 
 data class Experiment(
@@ -91,7 +120,24 @@ class ExperimentStore(private val context: Context) {
     @Synchronized
     fun load(): Experiment {
         if (!manifestFile.exists()) return Experiment()
-        return runCatching { decode(JSONObject(manifestFile.readText())) }.getOrElse { Experiment() }
+        return runCatching {
+            val experiment = decode(JSONObject(manifestFile.readText()))
+            var changed = false
+            experiment.videos.filter { it.sourceFrameCount <= 0L && File(it.localPath).exists() }.forEach { video ->
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(video.localPath)
+                    video.sourceFrameCount = retriever
+                        .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)
+                        ?.toLongOrNull() ?: 0L
+                    changed = changed || video.sourceFrameCount > 0L
+                } finally {
+                    retriever.release()
+                }
+            }
+            if (changed) save(experiment)
+            experiment
+        }.getOrElse { Experiment() }
     }
 
     @Synchronized
@@ -119,6 +165,7 @@ class ExperimentStore(private val context: Context) {
             durationMs = 0L,
             width = 0,
             height = 0,
+            sourceFrameCount = 0L,
             target = target,
         )
     }
@@ -128,7 +175,7 @@ class ExperimentStore(private val context: Context) {
     }
 
     private fun encode(experiment: Experiment): JSONObject = JSONObject().apply {
-        put("schemaVersion", 1)
+        put("schemaVersion", 2)
         put("name", experiment.name)
         put("status", experiment.status)
         put("version", experiment.version)
@@ -141,6 +188,7 @@ class ExperimentStore(private val context: Context) {
                     put("durationMs", video.durationMs)
                     put("width", video.width)
                     put("height", video.height)
+                    put("sourceFrameCount", video.sourceFrameCount)
                     put("target", video.target.name)
                     put("keyframes", JSONArray().apply {
                         video.keyframes.sortedBy { it.timestampMs }.forEach { keyframe ->
@@ -155,6 +203,15 @@ class ExperimentStore(private val context: Context) {
                                         put("bottom", roi.bottom.toDouble())
                                     })
                                 }
+                            })
+                        }
+                    })
+                    put("additionalAois", JSONArray().apply {
+                        video.additionalAois.forEach { track ->
+                            put(JSONObject().apply {
+                                put("id", track.id)
+                                put("target", track.target.name)
+                                put("keyframes", encodeKeyframes(track.keyframes))
                             })
                         }
                     })
@@ -178,6 +235,7 @@ class ExperimentStore(private val context: Context) {
                     durationMs = item.optLong("durationMs"),
                     width = item.optInt("width"),
                     height = item.optInt("height"),
+                    sourceFrameCount = item.optLong("sourceFrameCount", 0L),
                     target = runCatching { BodyTarget.valueOf(item.getString("target")) }
                         .getOrDefault(BodyTarget.HEAD),
                     keyframes = mutableListOf<RoiKeyframe>().apply {
@@ -199,8 +257,56 @@ class ExperimentStore(private val context: Context) {
                             ))
                         }
                     },
+                    additionalAois = mutableListOf<AoiTrack>().apply {
+                        val tracks = item.optJSONArray("additionalAois") ?: JSONArray()
+                        for (trackIndex in 0 until tracks.length()) {
+                            val track = tracks.getJSONObject(trackIndex)
+                            add(AoiTrack(
+                                id = track.optString("id", UUID.randomUUID().toString()),
+                                target = runCatching { BodyTarget.valueOf(track.getString("target")) }
+                                    .getOrDefault(BodyTarget.HEAD),
+                                keyframes = decodeKeyframes(track.optJSONArray("keyframes") ?: JSONArray()),
+                            ))
+                        }
+                    },
                 ))
             }
         },
     )
+
+    private fun encodeKeyframes(keyframes: List<RoiKeyframe>) = JSONArray().apply {
+        keyframes.sortedBy { it.timestampMs }.forEach { keyframe ->
+            put(JSONObject().apply {
+                put("timestampMs", keyframe.timestampMs)
+                put("visible", keyframe.visible)
+                keyframe.roi?.let { roi ->
+                    put("roi", JSONObject().apply {
+                        put("left", roi.left.toDouble())
+                        put("top", roi.top.toDouble())
+                        put("right", roi.right.toDouble())
+                        put("bottom", roi.bottom.toDouble())
+                    })
+                }
+            })
+        }
+    }
+
+    private fun decodeKeyframes(frames: JSONArray) = mutableListOf<RoiKeyframe>().apply {
+        for (frameIndex in 0 until frames.length()) {
+            val frame = frames.getJSONObject(frameIndex)
+            val roiJson = frame.optJSONObject("roi")
+            add(RoiKeyframe(
+                timestampMs = frame.getLong("timestampMs"),
+                visible = frame.optBoolean("visible", true),
+                roi = roiJson?.let {
+                    NormalizedRoi(
+                        it.getDouble("left").toFloat(),
+                        it.getDouble("top").toFloat(),
+                        it.getDouble("right").toFloat(),
+                        it.getDouble("bottom").toFloat(),
+                    )
+                },
+            ))
+        }
+    }
 }

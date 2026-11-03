@@ -18,7 +18,7 @@ data class HeatmapPoint(
 class GazeHeatmapView(context: Context) : View(context) {
     private var points: List<HeatmapPoint> = emptyList()
     private var playbackTimeMs: Long = 0L
-    private var currentRoi: NormalizedRoi? = null
+    private var currentRois: List<Pair<BodyTarget, NormalizedRoi>> = emptyList()
     private val density = resources.displayMetrics.density
     private val roiPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -36,15 +36,15 @@ class GazeHeatmapView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun setPlaybackState(timestampMs: Long, roi: NormalizedRoi?) {
+    fun setPlaybackState(timestampMs: Long, rois: List<Pair<BodyTarget, NormalizedRoi>>) {
         playbackTimeMs = timestampMs
-        currentRoi = roi
+        currentRois = rois
         invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        currentRoi?.let { roi ->
+        currentRois.forEach { (_, roi) ->
             canvas.drawRect(
                 roi.left * width,
                 roi.top * height,

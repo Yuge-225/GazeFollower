@@ -82,4 +82,46 @@ class ExperimentVideoTest {
         assertEquals(0.22f, expanded.right, 0.0001f)
         assertEquals(0.22f, expanded.bottom, 0.0001f)
     }
+
+    @Test
+    fun returnsAllVisibleAoisAtTheSameTimestamp() {
+        val subject = video(
+            RoiKeyframe(0, true, NormalizedRoi(0.1f, 0.1f, 0.3f, 0.3f)),
+        )
+        subject.additionalAois += AoiTrack(
+            target = BodyTarget.CHEST,
+            keyframes = mutableListOf(
+                RoiKeyframe(0, true, NormalizedRoi(0.4f, 0.4f, 0.7f, 0.7f)),
+            ),
+        )
+
+        val active = subject.activeAoisAt(500)
+
+        assertEquals(listOf(BodyTarget.HEAD, BodyTarget.CHEST), active.map { it.first })
+        assertEquals(2, active.size)
+    }
+
+    @Test
+    fun excludesAnAoiAfterItsInvisibleKeyframe() {
+        val subject = video(
+            RoiKeyframe(0, true, NormalizedRoi(0.1f, 0.1f, 0.3f, 0.3f)),
+        )
+        subject.additionalAois += AoiTrack(
+            target = BodyTarget.FOOT,
+            keyframes = mutableListOf(
+                RoiKeyframe(0, true, NormalizedRoi(0.6f, 0.7f, 0.9f, 0.95f)),
+                RoiKeyframe(400, false, null),
+            ),
+        )
+
+        assertEquals(listOf(BodyTarget.HEAD), subject.activeAoisAt(500).map { it.first })
+    }
+
+    @Test
+    fun configuredTargetsIncludePrimaryAndAdditionalAois() {
+        val subject = video()
+        subject.additionalAois += AoiTrack(target = BodyTarget.ABDOMEN)
+
+        assertEquals(listOf(BodyTarget.HEAD, BodyTarget.ABDOMEN), subject.allTargets())
+    }
 }
