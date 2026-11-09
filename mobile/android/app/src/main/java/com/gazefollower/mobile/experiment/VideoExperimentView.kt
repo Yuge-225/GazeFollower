@@ -188,15 +188,16 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         removeAllViews()
         if (save) saveSession()
         val totalValid = results.sumOf { it.validSamples }
+        val totalCaptured = results.sumOf { it.capturedGazeSamples }
         val totalStrict = results.sumOf { it.strictHits }
         val totalTolerant = results.sumOf { it.tolerantHits }
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(28), dp(20), dp(32))
             addView(label("RESULT DASHBOARD", 28f, true), params(16))
-            addView(label("Strict hit rate: ${percent(totalStrict, totalValid)}", 20f, true), params(6))
-            addView(label("Tolerant hit rate: ${percent(totalTolerant, totalValid)}", 20f, true), params(6))
-            addView(label("Valid scored samples: $totalValid", 16f, false), params(22))
+            addView(label("Strict hits: ${hitFraction(totalStrict, totalValid)}", 19f, true), params(6))
+            addView(label("Tolerant hits: ${hitFraction(totalTolerant, totalValid)}", 19f, true), params(6))
+            addView(label("Captured $totalCaptured gaze predictions · $totalValid valid scored samples", 16f, false), params(22))
             results.forEachIndexed { index, result ->
                 val meanDistance = if (result.validSamples == 0) 0f else result.distanceSum / result.validSamples
                 addView(resultCard(index, result, meanDistance), params(14))
@@ -219,8 +220,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         }, params(5))
         addView(label(result.video.displayName, 14f, false).apply { gravity = Gravity.START }, params(9))
         addView(label(
-            "Strict ${percent(result.strictHits, result.validSamples)}  ·  " +
-                "Tolerant ${percent(result.tolerantHits, result.validSamples)}  ·  " +
+            "Strict ${hitFraction(result.strictHits, result.validSamples)}\n" +
+                "Tolerant ${hitFraction(result.tolerantHits, result.validSamples)}\n" +
                 "Mean distance ${meanDistance.toInt()} px",
             14f,
             false,
@@ -289,6 +290,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         })
 
         val meanDistance = if (result.validSamples == 0) 0f else result.distanceSum / result.validSamples
+        val excludedSamples = (result.capturedGazeSamples - result.validSamples).coerceAtLeast(0)
         val metrics = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(12), dp(18), dp(30))
@@ -298,35 +300,42 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             addView(replayTime, params(2))
             addView(replayProgress, params(4, 42))
             addView(playPause, params(16, 50))
-            addView(metric(
-                "Strict hit rate",
-                percent(result.strictHits, result.validSamples),
-                "Percentage of gaze samples inside the exact bounding box.",
-            ), params(10))
-            addView(metric(
-                "Tolerant hit rate",
-                percent(result.tolerantHits, result.validSamples),
-                "Percentage inside a box enlarged by 20%. This includes near-edge misses.",
-            ), params(10))
-            addView(metric(
-                "Mean distance",
-                "${meanDistance.toInt()} px",
-                "Average shortest distance to the exact box. Samples inside the box count as 0 px.",
-            ), params(10))
+            addView(sectionLabel("DATA COVERAGE"), params(8))
             addView(metric(
                 "Source video frames",
                 frameCount(video),
-                "Frame count reported by the encoded video metadata. This is not an estimate of rendered frames.",
+                "Total encoded frames in the original video file copied into the app. This is independent of camera capture and gaze inference.",
             ), params(10))
             addView(metric(
                 "Gaze samples captured",
                 result.capturedGazeSamples.toString(),
-                "All gaze predictions received while this video was playing, before scoring filters.",
+                "Successful gaze predictions received while the video was playing. This may be lower than the front-camera frame count because frames can be dropped or fail face/inference requirements.",
             ), params(10))
             addView(metric(
-                "Scored samples",
+                "Valid scored samples",
                 result.validSamples.toString(),
-                "Gaze predictions after the first 500 ms with at least one visible true-label AOI.",
+                "Predictions at or after 500 ms when at least one true-label box is visible. A sample remains valid even when gaze misses every box.",
+            ), params(10))
+            addView(metric(
+                "Excluded gaze samples",
+                excludedSamples.toString(),
+                "Captured predictions not scored because they occurred during the first 500 ms or no true-label box was visible at that video time.",
+            ), params(10))
+            addView(sectionLabel("ACCURACY AGAINST TRUE-LABEL BOXES"), params(8))
+            addView(metric(
+                "Strict hits",
+                hitFraction(result.strictHits, result.validSamples),
+                "Valid samples whose gaze point is inside any exact annotated bounding box. The denominator is all valid scored samples.",
+            ), params(10))
+            addView(metric(
+                "Tolerant hits",
+                hitFraction(result.tolerantHits, result.validSamples),
+                "Valid samples inside any tolerance box. Each exact box is enlarged by 20% in total width and height (10% on each side).",
+            ), params(10))
+            addView(metric(
+                "Mean distance to box",
+                "${meanDistance.toInt()} px",
+                "Mean shortest screen-pixel distance from each valid gaze point to the nearest exact box. Points inside a box contribute 0 px; lower is better.",
             ), params(10))
             addView(label(
                 "Heatmap: warmer and brighter areas received more gaze samples. The white ring is the latest gaze point; the green rectangle is the annotated target.",
@@ -369,6 +378,10 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         addView(label(explanation, 14f, false).apply { gravity = Gravity.START })
     }
 
+    private fun sectionLabel(textValue: String) = label(textValue, 15f, false).apply {
+        gravity = Gravity.START
+    }
+
     private fun stopDetailReplay() {
         detailTicker?.let { ticker -> detailVideoView?.removeCallbacks(ticker) }
         detailTicker = null
@@ -392,8 +405,13 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                         put("sourceVideoFrames", result.video.sourceFrameCount)
                         put("capturedGazeSamples", result.capturedGazeSamples)
                         put("validSamples", result.validSamples)
+                        put("excludedGazeSamples", (result.capturedGazeSamples - result.validSamples).coerceAtLeast(0))
                         put("strictHits", result.strictHits)
+                        put("strictHitRate", if (result.validSamples == 0) JSONObject.NULL else result.strictHits.toDouble() / result.validSamples)
                         put("tolerantHits", result.tolerantHits)
+                        put("tolerantHitRate", if (result.validSamples == 0) JSONObject.NULL else result.tolerantHits.toDouble() / result.validSamples)
+                        put("scoringDelayMs", SCORING_DELAY_MS)
+                        put("toleranceExpansionFraction", 0.20)
                         put("meanDistancePx", if (result.validSamples == 0) 0.0 else result.distanceSum / result.validSamples)
                     })
                 }
@@ -462,6 +480,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
     }
 
     private fun percent(hit: Int, total: Int): String = if (total == 0) "--" else "%.1f%%".format(hit * 100.0 / total)
+    private fun hitFraction(hit: Int, total: Int): String =
+        if (total == 0) "$hit / 0 (--%)" else "$hit / $total (${percent(hit, total)})"
     private fun frameCount(video: ExperimentVideo): String =
         if (video.sourceFrameCount > 0L) video.sourceFrameCount.toString() else "Unavailable"
     private fun formatTime(ms: Long): String {

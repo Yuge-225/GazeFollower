@@ -20,6 +20,15 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 class GazeCalibrationView(context: Context) : View(context) {
+    private data class ValidationObservation(
+        val pointIndex: Int,
+        val targetX: Float,
+        val targetY: Float,
+        val predictedX: Float,
+        val predictedY: Float,
+        val error: Float,
+    )
+
     enum class Stage { PREVIEW, CALIBRATION, CALIBRATION_RESULT, VALIDATION, VALIDATION_RESULT, VIDEO_TEST, LIVE_TEST, HEATMAP_RESULT }
 
     var onStageChanged: ((Stage) -> Unit)? = null
@@ -69,6 +78,7 @@ class GazeCalibrationView(context: Context) : View(context) {
     private var validationPointChangedAt = 0L
     private var validationPreviousTarget = validationTargets.first()
     private val validationErrors = mutableListOf<Float>()
+    private val validationObservations = mutableListOf<ValidationObservation>()
     private var validationHits = 0
     private var validationPassed = false
 
@@ -123,6 +133,14 @@ class GazeCalibrationView(context: Context) : View(context) {
         val dy = prediction[1] - target.second
         val error = kotlin.math.sqrt(dx * dx + dy * dy)
         validationErrors += error
+        validationObservations += ValidationObservation(
+            pointIndex = validationPointIndex,
+            targetX = target.first,
+            targetY = target.second,
+            predictedX = prediction[0],
+            predictedY = prediction[1],
+            error = error,
+        )
         if (error <= VALIDATION_HIT_RADIUS) validationHits += 1
         validationPointSamples += 1
         if (validationPointSamples < VALIDATION_SAMPLES_PER_POINT) return
@@ -149,6 +167,7 @@ class GazeCalibrationView(context: Context) : View(context) {
         validationPreviousTarget = validationTargets.first()
         validationPointChangedAt = SystemClock.uptimeMillis()
         validationErrors.clear()
+        validationObservations.clear()
         validationHits = 0
         validationPassed = false
         transitionTo(Stage.VALIDATION)
@@ -362,7 +381,6 @@ class GazeCalibrationView(context: Context) : View(context) {
 
     private fun drawValidation(canvas: Canvas) {
         drawStageBackground(canvas)
-        drawHeader(canvas, "GAZE VALIDATION", "Look steadily at each target")
         val target = validationTargets[validationPointIndex.coerceAtMost(validationTargets.lastIndex)]
         val elapsed = SystemClock.uptimeMillis() - validationPointChangedAt
         val progress = (elapsed / VALIDATION_MOVE_MS.toFloat()).coerceIn(0f, 1f)
@@ -379,13 +397,6 @@ class GazeCalibrationView(context: Context) : View(context) {
         canvas.drawCircle(x, y, 25f, paint)
         paint.color = 0xFF22C55E.toInt()
         canvas.drawCircle(x, y, 9f, paint)
-        paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 25f
-        paint.color = Color.WHITE
-        canvas.drawText("Validation point ${validationPointIndex + 1} of ${validationTargets.size}", width / 2f, height - 92f, paint)
-        paint.textSize = 18f
-        paint.color = 0xFF94A3B8.toInt()
-        canvas.drawText("This stage checks calibration before the videos begin", width / 2f, height - 58f, paint)
         postInvalidateOnAnimation()
     }
 
@@ -394,21 +405,91 @@ class GazeCalibrationView(context: Context) : View(context) {
         val total = validationErrors.size.coerceAtLeast(1)
         val hitRate = validationHits * 100f / total
         val meanError = validationErrors.average().let { if (it.isNaN()) 0.0 else it } * 100.0
+        val pointMeans = validationTargets.indices.mapNotNull { index ->
+            val observations = validationObservations.filter { it.pointIndex == index }
+            if (observations.isEmpty()) null else {
+                val meanX = observations.map { it.predictedX }.average().toFloat()
+                val meanY = observations.map { it.predictedY }.average().toFloat()
+                val target = validationTargets[index]
+                val dx = meanX - target.first
+                val dy = meanY - target.second
+                Triple(meanX, meanY, kotlin.math.sqrt(dx * dx + dy * dy))
+            }
+        }
+        val pointsWithinTolerance = pointMeans.count { it.third <= VALIDATION_HIT_RADIUS }
+
         paint.textAlign = Paint.Align.CENTER
-        paint.color = if (validationPassed) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt()
-        paint.textSize = 70f
-        canvas.drawText(if (validationPassed) "✓" else "!", width / 2f, height * 0.27f, paint)
         paint.color = Color.WHITE
-        paint.textSize = 34f
-        canvas.drawText(if (validationPassed) "Validation passed" else "Validation needs attention", width / 2f, height * 0.35f, paint)
+        paint.textSize = 24f
+        canvas.drawText("VALIDATION RESULT", width / 2f, height * 0.045f, paint)
+        paint.color = if (validationPassed) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt()
+        paint.textSize = 36f
+        canvas.drawText(if (validationPassed) "Validation passed" else "Validation needs attention", width / 2f, height * 0.088f, paint)
+
+        val mapRect = RectF(width * 0.08f, height * 0.12f, width * 0.92f, height * 0.48f)
+        paint.style = Paint.Style.FILL
+        paint.color = 0xCC0F172A.toInt()
+        canvas.drawRoundRect(mapRect, 24f, 24f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2f
+        paint.color = 0xFF334155.toInt()
+        canvas.drawRoundRect(mapRect, 24f, 24f, paint)
+
+        validationTargets.forEachIndexed { index, target ->
+            val targetX = mapRect.left + target.first * mapRect.width()
+            val targetY = mapRect.top + target.second * mapRect.height()
+            paint.style = Paint.Style.FILL
+            paint.color = 0x1438BDF8
+            canvas.drawOval(
+                RectF(
+                    targetX - VALIDATION_HIT_RADIUS * mapRect.width(),
+                    targetY - VALIDATION_HIT_RADIUS * mapRect.height(),
+                    targetX + VALIDATION_HIT_RADIUS * mapRect.width(),
+                    targetY + VALIDATION_HIT_RADIUS * mapRect.height(),
+                ),
+                paint,
+            )
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 3f
+            paint.color = Color.WHITE
+            canvas.drawCircle(targetX, targetY, 12f, paint)
+
+            val observations = validationObservations.filter { it.pointIndex == index }
+            if (observations.isNotEmpty()) {
+                val predictedX = observations.map { it.predictedX }.average().toFloat()
+                val predictedY = observations.map { it.predictedY }.average().toFloat()
+                val dx = predictedX - target.first
+                val dy = predictedY - target.second
+                val meanPointError = kotlin.math.sqrt(dx * dx + dy * dy)
+                val screenX = mapRect.left + predictedX.coerceIn(0f, 1f) * mapRect.width()
+                val screenY = mapRect.top + predictedY.coerceIn(0f, 1f) * mapRect.height()
+                val predictionColor = if (meanPointError <= VALIDATION_HIT_RADIUS) {
+                    0xFF22C55E.toInt()
+                } else {
+                    0xFFF97316.toInt()
+                }
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 4f
+                paint.color = predictionColor
+                canvas.drawLine(targetX, targetY, screenX, screenY, paint)
+                paint.style = Paint.Style.FILL
+                canvas.drawCircle(screenX, screenY, 11f, paint)
+            }
+        }
+
+        paint.textAlign = Paint.Align.CENTER
         paint.color = 0xFFCBD5E1.toInt()
-        paint.textSize = 21f
-        canvas.drawText("Hit rate %.1f%% · Mean normalized error %.1f%%".format(hitRate, meanError), width / 2f, height * 0.41f, paint)
+        paint.textSize = 16f
+        canvas.drawText("○ Target    ● Mean prediction    — Error", width / 2f, height * 0.515f, paint)
+        paint.textSize = 20f
+        canvas.drawText("Points within tolerance: $pointsWithinTolerance / ${validationTargets.size}", width / 2f, height * 0.56f, paint)
+        canvas.drawText("Samples within tolerance: $validationHits / $total (%.1f%%)".format(hitRate), width / 2f, height * 0.60f, paint)
+        canvas.drawText("Mean normalized error: %.1f%%".format(meanError), width / 2f, height * 0.64f, paint)
         paint.color = 0xFF94A3B8.toInt()
-        paint.textSize = 17f
-        canvas.drawText("Pass: ≥70% within 12% screen diagonal and mean error ≤15%", width / 2f, height * 0.46f, paint)
-        primaryButton.set(width * 0.16f, height * 0.57f, width * 0.84f, height * 0.57f + 88f)
-        secondaryButton.set(width * 0.16f, height * 0.57f + 108f, width * 0.84f, height * 0.57f + 196f)
+        paint.textSize = 16f
+        canvas.drawText("Pass: ≥70% within 12% normalized units and mean error ≤15%", width / 2f, height * 0.685f, paint)
+        primaryButton.set(width * 0.16f, height * 0.75f, width * 0.84f, height * 0.75f + 88f)
+        secondaryButton.set(width * 0.16f, height * 0.75f + 108f, width * 0.84f, height * 0.75f + 196f)
         drawButton(canvas, primaryButton, if (validationPassed) {
             if (onStartVideoExperiment == null) "Start body Live Test" else "Start video experiment"
         } else "Repeat validation", true)
