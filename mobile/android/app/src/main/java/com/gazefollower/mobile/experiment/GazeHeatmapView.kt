@@ -18,17 +18,23 @@ data class HeatmapPoint(
 class GazeHeatmapView(context: Context) : View(context) {
     private var points: List<HeatmapPoint> = emptyList()
     private var playbackTimeMs: Long = 0L
-    private var currentRois: List<Pair<BodyTarget, NormalizedRoi>> = emptyList()
+    private var currentRois: List<Pair<String, NormalizedRoi>> = emptyList()
+    private var labelColors: Map<String, Int> = emptyMap()
+    private var labelNames: Map<String, String> = emptyMap()
     private val density = resources.displayMetrics.density
     private val roiPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 2f * density
-        color = 0xFF33E58D.toInt()
     }
     private val currentPointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 2f * density
         color = Color.WHITE
+    }
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        textSize = 13f * density
+        setShadowLayer(3f * density, 0f, 1f * density, Color.BLACK)
     }
 
     fun setPoints(value: List<HeatmapPoint>) {
@@ -36,7 +42,17 @@ class GazeHeatmapView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun setPlaybackState(timestampMs: Long, rois: List<Pair<BodyTarget, NormalizedRoi>>) {
+    fun setLabelColors(value: Map<String, Int>) {
+        labelColors = value
+        invalidate()
+    }
+
+    fun setLabelNames(value: Map<String, String>) {
+        labelNames = value
+        invalidate()
+    }
+
+    fun setPlaybackState(timestampMs: Long, rois: List<Pair<String, NormalizedRoi>>) {
         playbackTimeMs = timestampMs
         currentRois = rois
         invalidate()
@@ -44,7 +60,10 @@ class GazeHeatmapView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        currentRois.forEach { (_, roi) ->
+        currentRois.forEach { (labelId, roi) ->
+            roiPaint.color = labelColors[labelId] ?: LabelLibraryStore.DEFAULT_COLORS[
+                Math.floorMod(labelId.hashCode(), LabelLibraryStore.DEFAULT_COLORS.size)
+            ]
             canvas.drawRect(
                 roi.left * width,
                 roi.top * height,
@@ -52,6 +71,15 @@ class GazeHeatmapView(context: Context) : View(context) {
                 roi.bottom * height,
                 roiPaint,
             )
+            labelNames[labelId]?.let { name ->
+                labelPaint.color = roiPaint.color
+                canvas.drawText(
+                    name,
+                    roi.left * width + 4f * density,
+                    (roi.top * height - 5f * density).coerceAtLeast(15f * density),
+                    labelPaint,
+                )
+            }
         }
 
         val visible = points.filter { it.timestampMs <= playbackTimeMs }

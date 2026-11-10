@@ -7,16 +7,20 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.VideoView
 import com.gazefollower.mobile.R
+import com.gazefollower.mobile.MODE_READY
+import com.gazefollower.mobile.MODE_SCROLL
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -37,6 +41,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val tolerantHit: Boolean,
         val distancePx: Float,
         val matchedAois: String,
+        val assignedLabelId: String,
     )
 
     private data class TrialResult(
@@ -46,6 +51,9 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         var strictHits: Int = 0,
         var tolerantHits: Int = 0,
         var distanceSum: Float = 0f,
+        var presentedDurationMs: Long = 0L,
+        var endedBySwipe: Boolean = false,
+        val attentionCounts: MutableMap<String, Int> = mutableMapOf(),
     )
 
     private val handler = Handler(Looper.getMainLooper())
@@ -57,6 +65,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
     private var videoStage: View? = null
     private var collecting = false
     private var sessionId = ""
+    private var presentationMode = MODE_READY
+    private var startedAtMs = 0L
     private var detailVideoView: VideoView? = null
     private var detailTicker: Runnable? = null
 
@@ -65,12 +75,14 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         visibility = GONE
     }
 
-    fun start(experiment: Experiment) {
+    fun start(experiment: Experiment, mode: String = MODE_READY) {
         this.experiment = experiment
+        presentationMode = if (mode == MODE_SCROLL) MODE_SCROLL else MODE_READY
         trialIndex = 0
         results.clear()
         samples.clear()
         sessionId = UUID.randomUUID().toString()
+        startedAtMs = System.currentTimeMillis()
         visibility = VISIBLE
         showInstruction()
     }
@@ -109,13 +121,22 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 }
                 hypot(dx, dy)
             }
-            val matchedAois = strictRegions.filter { (_, region) -> region.contains(gazeX, gazeY) }
-                .joinToString("|") { it.first.label }
+            val assignedLabelId = strictRegions
+                .filter { (_, region) -> region.contains(gazeX, gazeY) }
+                .minByOrNull { (_, region) -> region.width() * region.height() }
+                ?.first
+                ?: OUTSIDE_LABEL_ID
+            val matchedAois = if (assignedLabelId == OUTSIDE_LABEL_ID) {
+                "Outside AOIs"
+            } else {
+                exp.labels.firstOrNull { it.id == assignedLabelId }?.name ?: assignedLabelId
+            }
             result.validSamples += 1
             if (strictHit) result.strictHits += 1
             if (tolerantHit) result.tolerantHits += 1
             result.distanceSum += distance
-            samples += Sample(video.id, position, gazeX, gazeY, videoX, videoY, strictHit, tolerantHit, distance, matchedAois)
+            result.attentionCounts[assignedLabelId] = (result.attentionCounts[assignedLabelId] ?: 0) + 1
+            samples += Sample(video.id, position, gazeX, gazeY, videoX, videoY, strictHit, tolerantHit, distance, matchedAois, assignedLabelId)
         }
     }
 
@@ -125,15 +146,20 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         removeAllViews()
         val exp = experiment ?: return
         val video = exp.videos.getOrNull(trialIndex) ?: return showDashboard()
+        if (presentationMode == MODE_SCROLL && trialIndex > 0) {
+            playVideo(video)
+            return
+        }
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(24), dp(24), dp(24))
-            addView(label("TRIAL ${trialIndex + 1} OF ${exp.videos.size}", 16f, false), params(18))
-            addView(label("Areas of interest", 24f, false), params(6))
-            addView(label(video.allTargets().joinToString(" · ") { it.label.uppercase() }, 30f, true), params(18))
-            addView(label(video.displayName, 15f, false), params(30))
-            addView(button("Ready") { startCountdown(video) }, params(12, 64))
+            addView(label(if (presentationMode == MODE_SCROLL) "SCROLL MODE" else "VIDEO ${trialIndex + 1} OF ${exp.videos.size}", 16f, false), params(18))
+            addView(label(if (presentationMode == MODE_SCROLL) "Swipe up for the next video" else "Ready for the next video?", 25f, true), params(10))
+            addView(label(if (presentationMode == MODE_SCROLL) "The current video stops scoring as soon as the swipe is accepted." else video.displayName, 15f, false), params(30))
+            addView(button(if (presentationMode == MODE_SCROLL) "Start Scroll Test" else "Ready") {
+                if (presentationMode == MODE_SCROLL) playVideo(video) else startCountdown(video)
+            }, params(12, 64))
             addView(button("Exit experiment") { onExit?.invoke() }, params(height = 52))
         }
         addView(content, LayoutParams(-1, -1))
@@ -160,14 +186,10 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 start()
             }
             setOnCompletionListener {
-                collecting = false
-                trialIndex += 1
-                showInstruction()
+                finishCurrentVideo(swiped = false)
             }
             setOnErrorListener { _, _, _ ->
-                collecting = false
-                trialIndex += 1
-                showInstruction()
+                finishCurrentVideo(swiped = false)
                 true
             }
         }
@@ -178,6 +200,58 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         }
         videoStage = stage
         addView(stage, LayoutParams(-2, -2, Gravity.CENTER))
+        if (presentationMode == MODE_SCROLL) installSwipeGesture(stage)
+    }
+
+    private fun installSwipeGesture(stage: View) {
+        var downY = 0f
+        stage.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val delta = (event.rawY - downY).coerceAtMost(0f)
+                    view.translationY = delta * 0.35f
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val delta = event.rawY - downY
+                    if (delta < -dp(72)) {
+                        collecting = false
+                        val cutoffAtSwipe = videoView?.currentPosition?.toLong()?.coerceAtLeast(0L)
+                        view.animate().translationY(-height.toFloat()).alpha(0f).setDuration(180L)
+                            .withEndAction { finishCurrentVideo(swiped = true, cutoffMs = cutoffAtSwipe) }.start()
+                    } else {
+                        view.animate().translationY(0f).alpha(1f).setDuration(140L).start()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    view.animate().translationY(0f).alpha(1f).setDuration(140L).start()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun finishCurrentVideo(swiped: Boolean, cutoffMs: Long? = null) {
+        val player = videoView
+        val result = results.lastOrNull()
+        collecting = false
+        result?.presentedDurationMs = if (swiped) {
+            cutoffMs ?: player?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L
+        } else {
+            result?.video?.durationMs ?: 0L
+        }
+        result?.endedBySwipe = swiped
+        player?.stopPlayback()
+        videoView = null
+        videoStage = null
+        trialIndex += 1
+        showInstruction()
     }
 
     private fun showDashboard(save: Boolean = true) {
@@ -191,47 +265,85 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val totalCaptured = results.sumOf { it.capturedGazeSamples }
         val totalStrict = results.sumOf { it.strictHits }
         val totalTolerant = results.sumOf { it.tolerantHits }
+        val totalAttention = mutableMapOf<String, Int>()
+        results.forEach { result -> result.attentionCounts.forEach { (id, count) ->
+            totalAttention[id] = (totalAttention[id] ?: 0) + count
+        } }
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(28), dp(20), dp(32))
-            addView(label("RESULT DASHBOARD", 28f, true), params(16))
-            addView(label("Strict hits: ${hitFraction(totalStrict, totalValid)}", 19f, true), params(6))
-            addView(label("Tolerant hits: ${hitFraction(totalTolerant, totalValid)}", 19f, true), params(6))
-            addView(label("Captured $totalCaptured gaze predictions · $totalValid valid scored samples", 16f, false), params(22))
-            results.forEachIndexed { index, result ->
-                val meanDistance = if (result.validSamples == 0) 0f else result.distanceSum / result.validSamples
-                addView(resultCard(index, result, meanDistance), params(14))
+            setPadding(dp(20), dp(18), dp(20), dp(24))
+            addView(label("Test Result", 26f, true).apply { gravity = Gravity.START }, params(3))
+            addView(label("${if (presentationMode == MODE_SCROLL) "SCROLL MODE" else "READY MODE"} · ${results.size} videos · $totalValid valid samples", 14f, false).apply { gravity = Gravity.START }, params(16))
+            addView(label("Attention", 20f, true).apply { gravity = Gravity.START }, params(8))
+            totalAttention.entries.sortedByDescending { it.value }.forEach { (id, count) ->
+                addView(attentionBar(labelName(id), count, totalValid), params(7))
             }
-            addView(button("Return to home") { onExit?.invoke() }, params(8, 58))
+            val technical = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = GONE
+                addView(label("Captured gaze samples · $totalCaptured", 14f, false).apply { gravity = Gravity.START }, params(3))
+                addView(label("Inside exact AOIs · ${hitFraction(totalStrict, totalValid)}", 14f, false).apply { gravity = Gravity.START }, params(3))
+                addView(label("Inside tolerant AOIs · ${hitFraction(totalTolerant, totalValid)}", 14f, false).apply { gravity = Gravity.START })
+            }
+            val toggle = button("Show Technical Details") {}
+            toggle.setOnClickListener {
+                val show = technical.visibility != VISIBLE
+                technical.visibility = if (show) VISIBLE else GONE
+                toggle.text = if (show) "Hide Technical Details" else "Show Technical Details"
+            }
+            addView(toggle, params(5, 44))
+            addView(technical, params(14))
+            addView(label("Videos", 20f, true).apply { gravity = Gravity.START }, params(8))
+            results.forEachIndexed { index, result ->
+                addView(resultCard(index, result), params(9))
+            }
+            addView(button("Return to Home") { onExit?.invoke() }, params(8, 46))
         }
         addView(ScrollView(context).apply { addView(content) }, LayoutParams(-1, -1))
     }
 
-    private fun resultCard(index: Int, result: TrialResult, meanDistance: Float): View = LinearLayout(context).apply {
+    private fun resultCard(index: Int, result: TrialResult): View = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(14), dp(14), dp(14), dp(14))
         background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
+            cornerRadius = dp(12).toFloat()
             setColor(context.getColor(R.color.card_background))
             setStroke(dp(1), context.getColor(R.color.card_border))
         }
-        addView(label("VIDEO ${index + 1} · ${result.video.allTargets().joinToString(" + ") { it.label.uppercase() }}", 18f, true).apply {
-            gravity = Gravity.START
-        }, params(5))
-        addView(label(result.video.displayName, 14f, false).apply { gravity = Gravity.START }, params(9))
-        addView(label(
-            "Strict ${hitFraction(result.strictHits, result.validSamples)}\n" +
-                "Tolerant ${hitFraction(result.tolerantHits, result.validSamples)}\n" +
-                "Mean distance ${meanDistance.toInt()} px",
-            14f,
-            false,
-        ).apply { gravity = Gravity.START }, params(10))
-        addView(label(
-            "Source frames ${frameCount(result.video)}  ·  Captured gaze samples ${result.capturedGazeSamples}  ·  Valid ${result.validSamples}",
-            13f,
-            false,
-        ).apply { gravity = Gravity.START }, params(10))
-        addView(button("View replay, heatmap, and details") { showResultDetail(index) }, params(height = 52))
+        isClickable = true
+        isFocusable = true
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(label("${index + 1}. ${result.video.displayName}", 16f, true).apply { gravity = Gravity.START }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(label("›", 22f, true), LinearLayout.LayoutParams(-2, -2))
+        }, params(4))
+        addView(label("${if (presentationMode == MODE_SCROLL) "SCROLL" else "READY"} · ${result.validSamples} valid samples", 13f, false).apply { gravity = Gravity.START }, params(5))
+        if (presentationMode == MODE_SCROLL) {
+            addView(label(
+                if (result.endedBySwipe) "Swiped at ${formatTime(result.presentedDurationMs)} · later gaze data unavailable"
+                else "Video completed before a swipe",
+                13f,
+                false,
+            ).apply { gravity = Gravity.START }, params(8))
+        }
+        addView(label(attentionSummary(result).lineSequence().take(2).joinToString(" · "), 13f, false).apply { gravity = Gravity.START })
+        setOnClickListener { showResultDetail(index) }
+    }
+
+    private fun attentionBar(name: String, count: Int, total: Int): View = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(label(name, 14f, true).apply { gravity = Gravity.START }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(label("${percent(count, total)} · $count", 13f, false), LinearLayout.LayoutParams(-2, -2))
+        })
+        addView(ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1000
+            progress = if (total == 0) 0 else count * 1000 / total
+            progressTintList = ColorStateList.valueOf(context.getColor(R.color.button_background))
+            progressBackgroundTintList = ColorStateList.valueOf(context.getColor(R.color.card_border))
+        }, LinearLayout.LayoutParams(-1, dp(6)).apply { topMargin = dp(3) })
     }
 
     private fun showResultDetail(index: Int) {
@@ -242,6 +354,16 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val videoSamples = samples.filter { it.videoId == video.id }
         val heatmap = GazeHeatmapView(context).apply {
             setPoints(videoSamples.map { HeatmapPoint(it.positionMs, it.videoX, it.videoY) })
+            setLabelColors(experiment?.labels?.associate { it.id to it.colorArgb }.orEmpty())
+            setLabelNames(experiment?.labels?.associate { it.id to it.name }.orEmpty())
+        }
+        val cutoff = result.presentedDurationMs.takeIf { it > 0L } ?: video.durationMs
+        val showUnavailableAfterCutoff = presentationMode == MODE_SCROLL && result.endedBySwipe
+        val unavailableOverlay = label("GAZE DATA NOT AVAILABLE\nAFTER SWIPE", 18f, true).apply {
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xD905080D.toInt())
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+            visibility = GONE
         }
         val player = VideoView(context).apply { setVideoPath(video.localPath) }
         detailVideoView = player
@@ -249,6 +371,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             setBackgroundColor(0xFF05080D.toInt())
             addView(player, LayoutParams(-1, -1))
             addView(heatmap, LayoutParams(-1, -1))
+            addView(unavailableOverlay, LayoutParams(-2, -2, Gravity.CENTER))
         }
         val replayArea = FrameLayout(context).apply {
             setBackgroundColor(0xFF05080D.toInt())
@@ -260,6 +383,11 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         }
         lateinit var playPause: Button
         var dragging = false
+        fun updateReplay(position: Long) {
+            replayTime.text = "${formatTime(position)} / ${formatTime(video.durationMs)}"
+            heatmap.setPlaybackState(position.coerceAtMost(cutoff), video.activeAoisAt(position.coerceAtMost(cutoff)))
+            unavailableOverlay.visibility = if (showUnavailableAfterCutoff && position > cutoff) VISIBLE else GONE
+        }
         playPause = button("Pause replay") {
             if (player.isPlaying) {
                 player.pause()
@@ -278,8 +406,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             override fun onProgressChanged(seekBar: SeekBar, value: Int, fromUser: Boolean) {
                 if (!fromUser) return
                 player.seekTo(value)
-                replayTime.text = "${formatTime(value.toLong())} / ${formatTime(video.durationMs)}"
-                heatmap.setPlaybackState(value.toLong(), video.activeAoisAt(value.toLong()))
+                updateReplay(value.toLong())
             }
 
             override fun onStopTrackingTouch(seekBar: SeekBar) {
@@ -293,60 +420,42 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val excludedSamples = (result.capturedGazeSamples - result.validSamples).coerceAtLeast(0)
         val metrics = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(30))
-            addView(button("← Back to all videos") { showDashboard(save = false) }, params(8, 50))
-            addView(label("VIDEO ${index + 1} · ${video.allTargets().joinToString(" + ") { it.label.uppercase() }}", 22f, true), params(4))
-            addView(label(video.displayName, 14f, false), params(10))
+            setPadding(dp(18), dp(10), dp(18), dp(20))
+            addView(label(video.displayName, 19f, true).apply { gravity = Gravity.START }, params(3))
+            addView(label("${if (presentationMode == MODE_SCROLL) "SCROLL MODE" else "READY MODE"}", 13f, false).apply { gravity = Gravity.START }, params(6))
+            if (showUnavailableAfterCutoff) {
+                addView(label("Swiped at ${formatTime(cutoff)} · gaze data after this point was not collected or scored.", 14f, false), params(10))
+            }
             addView(replayTime, params(2))
             addView(replayProgress, params(4, 42))
-            addView(playPause, params(16, 50))
-            addView(sectionLabel("DATA COVERAGE"), params(8))
-            addView(metric(
-                "Source video frames",
-                frameCount(video),
-                "Total encoded frames in the original video file copied into the app. This is independent of camera capture and gaze inference.",
-            ), params(10))
-            addView(metric(
-                "Gaze samples captured",
-                result.capturedGazeSamples.toString(),
-                "Successful gaze predictions received while the video was playing. This may be lower than the front-camera frame count because frames can be dropped or fail face/inference requirements.",
-            ), params(10))
-            addView(metric(
-                "Valid scored samples",
-                result.validSamples.toString(),
-                "Predictions at or after 500 ms when at least one true-label box is visible. A sample remains valid even when gaze misses every box.",
-            ), params(10))
-            addView(metric(
-                "Excluded gaze samples",
-                excludedSamples.toString(),
-                "Captured predictions not scored because they occurred during the first 500 ms or no true-label box was visible at that video time.",
-            ), params(10))
-            addView(sectionLabel("ACCURACY AGAINST TRUE-LABEL BOXES"), params(8))
-            addView(metric(
-                "Strict hits",
-                hitFraction(result.strictHits, result.validSamples),
-                "Valid samples whose gaze point is inside any exact annotated bounding box. The denominator is all valid scored samples.",
-            ), params(10))
-            addView(metric(
-                "Tolerant hits",
-                hitFraction(result.tolerantHits, result.validSamples),
-                "Valid samples inside any tolerance box. Each exact box is enlarged by 20% in total width and height (10% on each side).",
-            ), params(10))
-            addView(metric(
-                "Mean distance to box",
-                "${meanDistance.toInt()} px",
-                "Mean shortest screen-pixel distance from each valid gaze point to the nearest exact box. Points inside a box contribute 0 px; lower is better.",
-            ), params(10))
-            addView(label(
-                "Heatmap: warmer and brighter areas received more gaze samples. The white ring is the latest gaze point; the green rectangle is the annotated target.",
-                14f,
-                false,
-            ), params(10))
+            addView(playPause, params(10, 44))
+            addView(sectionLabel("ATTENTION"), params(7))
+            result.attentionCounts.entries.sortedByDescending { it.value }.forEach { (labelId, count) ->
+                addView(attentionBar(labelName(labelId), count, result.validSamples), params(6))
+            }
+            val technical = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = GONE
+                addView(label("Source frames · ${frameCount(video)}", 13f, false).apply { gravity = Gravity.START }, params(3))
+                addView(label("Captured · ${result.capturedGazeSamples} · Valid · ${result.validSamples} · Excluded · $excludedSamples", 13f, false).apply { gravity = Gravity.START }, params(3))
+                addView(label("Inside exact AOIs · ${hitFraction(result.strictHits, result.validSamples)}", 13f, false).apply { gravity = Gravity.START }, params(3))
+                addView(label("Inside tolerant AOIs · ${hitFraction(result.tolerantHits, result.validSamples)}", 13f, false).apply { gravity = Gravity.START }, params(3))
+                addView(label("Mean distance · ${meanDistance.toInt()} px", 13f, false).apply { gravity = Gravity.START })
+            }
+            val toggle = button("Show Technical Details") {}
+            toggle.setOnClickListener {
+                val show = technical.visibility != VISIBLE
+                technical.visibility = if (show) VISIBLE else GONE
+                toggle.text = if (show) "Hide Technical Details" else "Show Technical Details"
+            }
+            addView(toggle, params(5, 42))
+            addView(technical, params(7))
+            addView(button("Back") { showDashboard(save = false) }, params(height = 44))
         }
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            addView(replayArea, LinearLayout.LayoutParams(-1, 0, 0.48f))
-            addView(ScrollView(context).apply { addView(metrics) }, LinearLayout.LayoutParams(-1, 0, 0.52f))
+            addView(replayArea, LinearLayout.LayoutParams(-1, 0, 0.58f))
+            addView(ScrollView(context).apply { addView(metrics) }, LinearLayout.LayoutParams(-1, 0, 0.42f))
         }
         addView(root, LayoutParams(-1, -1))
 
@@ -359,8 +468,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 if (!dragging) {
                     val position = player.currentPosition.coerceAtLeast(0)
                     replayProgress.progress = position.coerceAtMost(replayProgress.max)
-                    replayTime.text = "${formatTime(position.toLong())} / ${formatTime(video.durationMs)}"
-                    heatmap.setPlaybackState(position.toLong(), video.activeAoisAt(position.toLong()))
+                    updateReplay(position.toLong())
                 }
                 player.postDelayed(this, 33L)
             }
@@ -382,6 +490,34 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         gravity = Gravity.START
     }
 
+    private fun attentionSummary(result: TrialResult): String {
+        if (result.validSamples == 0 || result.attentionCounts.isEmpty()) return "Attention: no valid samples"
+        return result.attentionCounts.entries.sortedByDescending { it.value }.joinToString("\n") { (id, count) ->
+            "${labelName(id)}  $count / ${result.validSamples} (${percent(count, result.validSamples)})"
+        }
+    }
+
+    private fun labelName(id: String): String = if (id == OUTSIDE_LABEL_ID) {
+        "Outside AOIs"
+    } else {
+        experiment?.labels?.firstOrNull { it.id == id }?.name ?: id
+    }
+
+    private fun dwellMs(videoId: String, labelId: String): Long {
+        val ordered = samples.filter { it.videoId == videoId }.sortedBy { it.positionMs }
+        var total = 0L
+        for (index in 0 until ordered.lastIndex) {
+            val current = ordered[index]
+            val next = ordered[index + 1]
+            if (current.assignedLabelId == labelId) {
+                total += (next.positionMs - current.positionMs).coerceIn(0L, MAX_DWELL_GAP_MS)
+            }
+        }
+        return total
+    }
+
+    private fun formatDwell(ms: Long): String = "%.2f s dwell".format(ms / 1000.0)
+
     private fun stopDetailReplay() {
         detailTicker?.let { ticker -> detailVideoView?.removeCallbacks(ticker) }
         detailTicker = null
@@ -394,8 +530,13 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val directory = File(context.filesDir, "sessions/$sessionId").apply { mkdirs() }
         val summary = JSONObject().apply {
             put("sessionId", sessionId)
+            put("experimentId", exp.id)
             put("experimentName", exp.name)
             put("experimentVersion", exp.version)
+            put("presentationMode", presentationMode)
+            put("startedAtMs", startedAtMs)
+            put("completedAtMs", System.currentTimeMillis())
+            put("experimentSnapshot", ExperimentStore(context).snapshot(exp))
             put("trials", JSONArray().apply {
                 results.forEach { result ->
                     put(JSONObject().apply {
@@ -403,6 +544,9 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                         put("videoName", result.video.displayName)
                         put("targets", JSONArray(result.video.allTargets().map { it.name }))
                         put("sourceVideoFrames", result.video.sourceFrameCount)
+                        put("videoDurationMs", result.video.durationMs)
+                        put("presentedDurationMs", result.presentedDurationMs.takeIf { it > 0L } ?: result.video.durationMs)
+                        put("endedBySwipe", result.endedBySwipe)
                         put("capturedGazeSamples", result.capturedGazeSamples)
                         put("validSamples", result.validSamples)
                         put("excludedGazeSamples", (result.capturedGazeSamples - result.validSamples).coerceAtLeast(0))
@@ -413,15 +557,26 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                         put("scoringDelayMs", SCORING_DELAY_MS)
                         put("toleranceExpansionFraction", 0.20)
                         put("meanDistancePx", if (result.validSamples == 0) 0.0 else result.distanceSum / result.validSamples)
+                        put("attentionByLabel", JSONArray().apply {
+                            result.attentionCounts.entries.sortedByDescending { it.value }.forEach { (labelId, count) ->
+                                put(JSONObject().apply {
+                                    put("labelId", labelId)
+                                    put("labelName", labelName(labelId))
+                                    put("samples", count)
+                                    put("share", if (result.validSamples == 0) JSONObject.NULL else count.toDouble() / result.validSamples)
+                                    put("estimatedDwellMs", dwellMs(result.video.id, labelId))
+                                })
+                            }
+                        })
                     })
                 }
             })
         }
         File(directory, "session_summary.json").writeText(summary.toString(2))
         File(directory, "gaze_samples.csv").bufferedWriter().use { writer ->
-            writer.appendLine("video_id,video_time_ms,gaze_x_px,gaze_y_px,video_x_normalized,video_y_normalized,strict_hit,tolerant_hit,distance_px,matched_aois")
+            writer.appendLine("video_id,video_time_ms,gaze_x_px,gaze_y_px,video_x_normalized,video_y_normalized,strict_hit,tolerant_hit,distance_px,matched_aois,assigned_label_id")
             samples.forEach { sample ->
-                writer.appendLine("${sample.videoId},${sample.positionMs},${sample.x},${sample.y},${sample.videoX},${sample.videoY},${sample.strictHit},${sample.tolerantHit},${sample.distancePx},\"${sample.matchedAois}\"")
+                writer.appendLine("${sample.videoId},${sample.positionMs},${sample.x},${sample.y},${sample.videoX},${sample.videoY},${sample.strictHit},${sample.tolerantHit},${sample.distancePx},\"${sample.matchedAois}\",${sample.assignedLabelId}")
             }
         }
     }
@@ -492,5 +647,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
 
     companion object {
         private const val SCORING_DELAY_MS = 500L
+        private const val OUTSIDE_LABEL_ID = "__OUTSIDE_AOIS__"
+        private const val MAX_DWELL_GAP_MS = 250L
     }
 }

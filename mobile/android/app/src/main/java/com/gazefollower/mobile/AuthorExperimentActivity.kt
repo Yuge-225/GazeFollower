@@ -10,6 +10,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -30,6 +31,8 @@ import com.gazefollower.mobile.experiment.EditableRoi
 import com.gazefollower.mobile.experiment.RoiEditorView
 import com.gazefollower.mobile.experiment.RoiKeyframe
 import com.gazefollower.mobile.experiment.NormalizedRoi
+import com.gazefollower.mobile.experiment.AoiLabel
+import com.gazefollower.mobile.experiment.LabelLibraryStore
 import kotlin.math.roundToLong
 
 class AuthorExperimentActivity : ComponentActivity() {
@@ -37,10 +40,14 @@ class AuthorExperimentActivity : ComponentActivity() {
         val id: String,
         val keyframes: MutableList<RoiKeyframe>,
         val roiAt: (Long) -> NormalizedRoi?,
+        val labelId: () -> String,
+        val setLabelId: (String) -> Unit,
     )
 
     private lateinit var store: ExperimentStore
     private lateinit var experiment: Experiment
+    private lateinit var labelStore: LabelLibraryStore
+    private lateinit var labelLibrary: MutableList<AoiLabel>
     private val density by lazy { resources.displayMetrics.density }
     private var editorVideo: VideoView? = null
     private var editorTicker: Runnable? = null
@@ -76,7 +83,9 @@ class AuthorExperimentActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = ExperimentStore(this)
-        experiment = store.load()
+        labelStore = LabelLibraryStore(this)
+        labelLibrary = labelStore.load()
+        experiment = store.load(intent.getStringExtra(EXTRA_VERSION_ID))
         showAuthorHome()
     }
 
@@ -93,78 +102,58 @@ class AuthorExperimentActivity : ComponentActivity() {
     private fun showAuthorHome() {
         releaseEditorResources()
         val annotatedCount = experiment.videos.count { video ->
-            video.keyframes.any { frame -> frame.visible && frame.roi != null } &&
-                video.additionalAois.all { track -> track.keyframes.any { it.visible && it.roi != null } }
+            video.labelId.isNotBlank() && video.keyframes.any { frame -> frame.visible && frame.roi != null } &&
+                video.additionalAois.all { track -> track.labelId.isNotBlank() && track.keyframes.any { it.visible && it.roi != null } }
         }
         val readyToPublish = experiment.videos.isNotEmpty() && annotatedCount == experiment.videos.size
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(20), dp(20), dp(32))
+            setPadding(dp(20), dp(16), dp(20), dp(24))
             setBackgroundColor(getColor(R.color.background))
-            addView(title("Author Experiment", 30f), matchWrap(8))
-            addView(body("Build and label the video test before a participant runs it."), matchWrap(8))
-            addView(body("${experiment.status.lowercase().replaceFirstChar { it.uppercase() }} · Version ${experiment.version} · Changes save automatically"), matchWrap(22))
-
-            addView(card().apply {
-                addView(title("Step 1 · Add videos", 21f), matchWrap(7))
-                addView(body("Choose up to five MP4 videos. The app copies them locally, so the phone can run the experiment without the Mac."), matchWrap(14))
-                addView(action(
-                    if (experiment.videos.isEmpty()) "Choose videos" else "Add more videos (${experiment.videos.size}/$MAX_VIDEOS)",
-                    primary = true,
-                    enabled = experiment.videos.size < MAX_VIDEOS,
-                ) {
-                    if (experiment.videos.size >= MAX_VIDEOS) {
-                        toast("This version supports up to five videos")
-                    } else {
-                        chooseVideos.launch(arrayOf("video/*"))
-                    }
-                }, matchWrap(height = 56))
-            }, matchWrap(16))
-
-            addView(title("Step 2 · Label every video", 21f), matchWrap(6))
-            addView(body(
-                if (experiment.videos.isEmpty()) {
-                    "Import videos first. Then open each video editor to add and label one or more bounding boxes."
-                } else {
-                    "$annotatedCount of ${experiment.videos.size} videos ready. Bounding boxes are added and edited inside each video editor."
-                }
-            ), matchWrap(14))
+            addView(title("Version ${experiment.version} Setup", 27f), matchWrap(4))
+            addView(body("${experiment.status} · $annotatedCount/${experiment.videos.size} videos ready · autosaved"), matchWrap(14))
+            addView(action(
+                if (experiment.videos.isEmpty()) "+ Add videos" else "+ Add video  ${experiment.videos.size}/$MAX_VIDEOS",
+                primary = experiment.videos.isEmpty(),
+                enabled = experiment.videos.size < MAX_VIDEOS,
+            ) { chooseVideos.launch(arrayOf("video/*")) }, matchWrap(14, 48))
         }
 
         experiment.videos.forEachIndexed { index, video ->
             val hasAnnotation = video.keyframes.any { frame -> frame.visible && frame.roi != null }
             val annotationReady = hasAnnotation &&
-                video.additionalAois.all { track -> track.keyframes.any { it.visible && it.roi != null } }
+                video.labelId.isNotBlank() &&
+                video.additionalAois.all { track -> track.labelId.isNotBlank() && track.keyframes.any { it.visible && it.roi != null } }
             val videoCard = card().apply {
-                addView(body("VIDEO ${index + 1} OF ${experiment.videos.size}"), matchWrap(5))
-                addView(title(video.displayName, 17f), matchWrap(6))
-                addView(body("${formatTime(video.durationMs)} · ${video.width}×${video.height}"), matchWrap(12))
-                addView(body("Bounding boxes: ${1 + video.additionalAois.size}"), matchWrap(6))
-                addView(annotationBadge(video, annotationReady), matchWrap(8))
-                addView(action(
-                    if (annotationReady) "Review or edit boxes" else "Open box editor",
-                    primary = true,
-                ) { showMultiBoxEditor(video) }, matchWrap(8, 54))
-                addView(action("Remove video") {
-                    store.deleteVideo(video)
-                    experiment.videos.remove(video)
-                    markDraftAndSave()
-                    showAuthorHome()
-                }, matchWrap(height = 48))
+                isClickable = true
+                isFocusable = true
+                addView(LinearLayout(this@AuthorExperimentActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(title("${index + 1}. ${video.displayName}", 16f), LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(action("⋮") {
+                        AlertDialog.Builder(this@AuthorExperimentActivity)
+                            .setTitle(video.displayName)
+                            .setItems(arrayOf("Remove video")) { _, _ ->
+                                store.deleteVideo(video)
+                                experiment.videos.remove(video)
+                                markDraftAndSave()
+                                showAuthorHome()
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    }, LinearLayout.LayoutParams(dp(44), dp(40)))
+                }, matchWrap(3))
+                addView(body("${formatTime(video.durationMs)} · ${1 + video.additionalAois.size} AOIs"), matchWrap(5))
+                addView(annotationBadge(video, annotationReady), matchWrap())
+                setOnClickListener { showMultiBoxEditor(video) }
             }
-            content.addView(videoCard, matchWrap(14))
+            content.addView(videoCard, matchWrap(9))
         }
 
-        content.addView(card().apply {
-            addView(title("Step 3 · Publish", 21f), matchWrap(7))
-            addView(body(when {
-                experiment.videos.isEmpty() -> "Waiting for videos."
-                readyToPublish -> "All ${experiment.videos.size} videos have a target ROI and are ready to publish."
-                else -> "Annotate the remaining ${experiment.videos.size - annotatedCount} video(s) before publishing."
-            }), matchWrap(14))
-            addView(action("Publish experiment", primary = true, enabled = readyToPublish) { publish() }, matchWrap(height = 56))
-        }, matchWrap(16))
-        content.addView(action("Back to home") { finish() }, matchWrap(height = 52))
+        if (experiment.videos.isEmpty()) content.addView(body("Add stimulus videos, then label every bounding box."), matchWrap(16))
+        content.addView(action("Publish Version", primary = true, enabled = readyToPublish) { publish() }, matchWrap(8, 50))
+        content.addView(action("Back") { finish() }, matchWrap(height = 46))
         setContentView(ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(getColor(R.color.background))
@@ -182,8 +171,19 @@ class AuthorExperimentActivity : ComponentActivity() {
         var preparedPlayer: MediaPlayer? = null
 
         fun tracks(): List<BoxTrack> = buildList {
-            add(BoxTrack(PRIMARY_BOX_ID, video.keyframes, video::roiAt))
-            video.additionalAois.forEach { track -> add(BoxTrack(track.id, track.keyframes, track::roiAt)) }
+            add(BoxTrack(PRIMARY_BOX_ID, video.keyframes, video::roiAt, { video.labelId }, { video.labelId = it }))
+            video.additionalAois.forEach { track ->
+                add(BoxTrack(track.id, track.keyframes, track::roiAt, { track.labelId }, { track.labelId = it }))
+            }
+        }
+
+        fun labelFor(id: String): AoiLabel? = experiment.labels.firstOrNull { it.id == id }
+            ?: labelLibrary.firstOrNull { it.id == id }
+        fun labelName(id: String): String = labelFor(id)?.name ?: if (id.isBlank()) "Unassigned" else id
+        fun labelColor(id: String, index: Int): Int = labelFor(id)?.colorArgb
+            ?: if (id.isBlank()) 0xFF94A3B8.toInt() else BOX_COLORS[index % BOX_COLORS.size]
+        fun rememberLabel(label: AoiLabel) {
+            if (experiment.labels.none { it.id == label.id }) experiment.labels += label.copy()
         }
 
         fun boxNumber(id: String): Int = tracks().indexOfFirst { it.id == id }.coerceAtLeast(0) + 1
@@ -197,9 +197,9 @@ class AuthorExperimentActivity : ComponentActivity() {
         fun boxesAt(timestamp: Long): List<EditableRoi> = tracks().mapIndexed { index, binding ->
             EditableRoi(
                 id = binding.id,
-                label = "Box ${index + 1}",
+                label = "Box ${index + 1} · ${labelName(binding.labelId())}",
                 roi = binding.roiAt(timestamp),
-                color = BOX_COLORS[index % BOX_COLORS.size],
+                color = labelColor(binding.labelId(), index),
             )
         }
         fun allBoxesInitialized(): Boolean = tracks().all { binding ->
@@ -235,9 +235,9 @@ class AuthorExperimentActivity : ComponentActivity() {
             addView(videoStage, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             addView(loadingOverlay, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         }
-        val selectedBoxLabel = body("Selected: Box 1 · drag box to move · drag corner to resize").apply {
+        val selectedBoxLabel = body("Selected: Box 1 · ${labelName(video.labelId)}").apply {
             gravity = Gravity.CENTER
-            setTextColor(BOX_COLORS.first())
+            setTextColor(labelColor(video.labelId, 0))
         }
         val time = body("00:00.000 / ${formatTime(video.durationMs)}").apply { gravity = Gravity.CENTER }
         val progress = SeekBar(this).apply {
@@ -254,8 +254,9 @@ class AuthorExperimentActivity : ComponentActivity() {
         fun updateSelection(id: String) {
             selectedId = id
             val index = boxNumber(id) - 1
-            selectedBoxLabel.text = "Selected: Box ${index + 1} · drag box to move · drag corner to resize"
-            selectedBoxLabel.setTextColor(BOX_COLORS[index % BOX_COLORS.size])
+            val binding = tracks().first { it.id == id }
+            selectedBoxLabel.text = "Selected: Box ${index + 1} · ${labelName(binding.labelId())}"
+            selectedBoxLabel.setTextColor(labelColor(binding.labelId(), index))
             deleteBoxButton.isEnabled = id != PRIMARY_BOX_ID
         }
         fun refreshBoxes(timestamp: Long) {
@@ -329,7 +330,7 @@ class AuthorExperimentActivity : ComponentActivity() {
         }
         val addBoxButton = action("+ Add bounding box", primary = true) {
             videoView.pause()
-            val newTrack = AoiTrack(target = video.target)
+            val newTrack = AoiTrack(target = video.target, labelId = "")
             val index = tracks().size
             newTrack.keyframes += RoiKeyframe(editTimestamp, true, defaultBox(index))
             video.additionalAois += newTrack
@@ -342,6 +343,33 @@ class AuthorExperimentActivity : ComponentActivity() {
             playPauseButton.text = "Resume playback"
             status.text = "Box ${index + 1} added · drag it into position"
         }
+        lateinit var showLabelPicker: () -> Unit
+        showLabelPicker = {
+            val choices = labelLibrary.filterNot { it.archived }
+            val items = choices.map { it.name } + "+ Manage reusable labels"
+            AlertDialog.Builder(this@AuthorExperimentActivity)
+                .setTitle("Assign a label to Box ${boxNumber(selectedId)}")
+                .setItems(items.toTypedArray()) { _, index ->
+                    if (index == choices.size) {
+                        showLabelLibraryManager {
+                            labelLibrary = labelStore.load()
+                            showLabelPicker()
+                        }
+                    } else {
+                        val label = choices[index]
+                        val binding = tracks().firstOrNull { it.id == selectedId } ?: return@setItems
+                        binding.setLabelId(label.id)
+                        rememberLabel(label)
+                        markDraftAndSave()
+                        refreshBoxes(editTimestamp)
+                        updateSelection(selectedId)
+                        status.text = "Box ${boxNumber(selectedId)} labeled ${label.name}"
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        val assignLabelButton = action("Assign or change label") { showLabelPicker() }
         deleteBoxButton = action("Delete selected box", enabled = false) {
             if (selectedId == PRIMARY_BOX_ID) return@action
             val selectedTrack = video.additionalAois.firstOrNull { it.id == selectedId } ?: return@action
@@ -386,25 +414,31 @@ class AuthorExperimentActivity : ComponentActivity() {
 
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(16))
+            setPadding(dp(14), dp(8), dp(14), dp(12))
             setBackgroundColor(getColor(R.color.background))
-            addView(title("Bounding-box editor", 22f), matchWrap(3))
-            addView(body("All boxes are shown together in different colors. Tap a box to select it."), matchWrap(6))
-            addView(selectedBoxLabel, matchWrap(6))
-            addView(addBoxButton, matchWrap(5, 52))
-            addView(deleteBoxButton, matchWrap(8, 48))
+            addView(LinearLayout(this@AuthorExperimentActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(title("Box Editor", 19f), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(action("Done", primary = true) { showAuthorHome() }, LinearLayout.LayoutParams(dp(82), dp(42)))
+            }, matchWrap(4))
+            addView(selectedBoxLabel, matchWrap(4))
+            addView(LinearLayout(this@AuthorExperimentActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(assignLabelButton.apply { text = "Label" }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(5) })
+                addView(addBoxButton.apply { text = "+ Box" }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(5) })
+                addView(deleteBoxButton.apply { text = "Delete" }, LinearLayout.LayoutParams(0, dp(44), 1f))
+            }, matchWrap(5))
             addView(time, matchWrap())
-            addView(body("Drag the progress bar to inspect and edit any frame"), matchWrap(2))
-            addView(progress, matchWrap(6, 40))
-            addView(status, matchWrap(10))
-            addView(playPauseButton, matchWrap(8, 56))
-            addView(action("Done") { showAuthorHome() }, matchWrap(height = 52))
+            addView(progress, matchWrap(3, 36))
+            addView(status, matchWrap(5))
+            addView(playPauseButton, matchWrap(height = 46))
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(getColor(R.color.background))
-            addView(player, LinearLayout.LayoutParams(-1, 0, 0.56f))
-            addView(ScrollView(this@AuthorExperimentActivity).apply { addView(controls) }, LinearLayout.LayoutParams(-1, 0, 0.44f))
+            addView(player, LinearLayout.LayoutParams(-1, 0, 0.66f))
+            addView(ScrollView(this@AuthorExperimentActivity).apply { addView(controls) }, LinearLayout.LayoutParams(-1, 0, 0.34f))
         }
         setContentView(root)
 
@@ -766,6 +800,84 @@ class AuthorExperimentActivity : ComponentActivity() {
         editorVideo = null
     }
 
+    private fun showLabelLibraryManager(onChanged: () -> Unit) {
+        val active = labelLibrary.filterNot { it.archived }
+        val items = listOf("+ Add new label") + active.map { "${it.name}  ·  Edit or remove" }
+        AlertDialog.Builder(this)
+            .setTitle("Reusable Label Library")
+            .setItems(items.toTypedArray()) { _, index ->
+                if (index == 0) showCreateLabel(onChanged) else showLabelOptions(active[index - 1], onChanged)
+            }
+            .setNegativeButton("Done", null)
+            .show()
+    }
+
+    private fun showCreateLabel(onChanged: () -> Unit) {
+        val input = EditText(this).apply { hint = "Label name"; setSingleLine(true) }
+        AlertDialog.Builder(this)
+            .setTitle("Add reusable label")
+            .setView(input)
+            .setPositiveButton("Add") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isBlank()) return@setPositiveButton
+                labelLibrary += AoiLabel(name = name, colorArgb = labelStore.nextColor(labelLibrary))
+                labelStore.save(labelLibrary)
+                onChanged()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showLabelOptions(label: AoiLabel, onChanged: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle(label.name)
+            .setItems(arrayOf("Rename", "Remove from library")) { _, index ->
+                if (index == 0) showRenameLabel(label, onChanged) else removeLabel(label, onChanged)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showRenameLabel(label: AoiLabel, onChanged: () -> Unit) {
+        val input = EditText(this).apply { setText(label.name); selectAll(); setSingleLine(true) }
+        AlertDialog.Builder(this)
+            .setTitle("Rename label")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isBlank()) return@setPositiveButton
+                label.name = name
+                experiment.labels.firstOrNull { it.id == label.id }?.name = name
+                labelStore.save(labelLibrary)
+                markDraftAndSave()
+                onChanged()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun removeLabel(label: AoiLabel, onChanged: () -> Unit) {
+        val used = store.list(includeArchived = true).any { candidate ->
+            candidate.videos.any { video ->
+                video.labelId == label.id || video.additionalAois.any { it.labelId == label.id }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle(if (used) "Archive ${label.name}?" else "Delete ${label.name}?")
+            .setMessage(if (used) {
+                "This label is already used by bounding boxes. It will be removed from the reusable list, but existing versions and results will keep their saved label."
+            } else {
+                "This unused label will be removed from the reusable library."
+            })
+            .setPositiveButton(if (used) "Archive" else "Delete") { _, _ ->
+                if (used) label.archived = true else labelLibrary.remove(label)
+                labelStore.save(labelLibrary)
+                onChanged()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun publish() {
         val error = when {
             experiment.videos.isEmpty() -> "Import at least one video"
@@ -776,16 +888,18 @@ class AuthorExperimentActivity : ComponentActivity() {
                     video.additionalAois.any { track -> track.keyframes.none { it.visible && it.roi != null } }
             } ->
                 "Every configured AOI needs at least one visible ROI keyframe"
+            experiment.videos.any { video ->
+                video.labelId.isBlank() || video.additionalAois.any { it.labelId.isBlank() }
+            } -> "Assign a reusable label to every bounding box before publishing"
             else -> null
         }
         if (error != null) {
             toast(error)
             return
         }
-        experiment.version += 1
         experiment.status = Experiment.STATUS_PUBLISHED
         store.save(experiment)
-        toast("Experiment published as version ${experiment.version}")
+        toast("Version ${experiment.version} published")
         showAuthorHome()
     }
 
@@ -835,7 +949,7 @@ class AuthorExperimentActivity : ComponentActivity() {
         click: () -> Unit,
     ) = Button(this).apply {
         text = label
-        textSize = 16f
+        textSize = 14f
         isAllCaps = false
         isEnabled = enabled
         setTextColor(ColorStateList(
@@ -854,26 +968,26 @@ class AuthorExperimentActivity : ComponentActivity() {
 
     private fun card() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(16), dp(16), dp(16))
+        setPadding(dp(14), dp(12), dp(14), dp(12))
         background = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
+            cornerRadius = dp(12).toFloat()
             setColor(getColor(R.color.card_background))
             setStroke(dp(1), getColor(R.color.card_border))
         }
     }
 
     private fun annotationBadge(video: ExperimentVideo, ready: Boolean) = TextView(this).apply {
-        val labeledCount = (if (video.keyframes.any { it.visible && it.roi != null }) 1 else 0) +
-            video.additionalAois.count { track -> track.keyframes.any { it.visible && it.roi != null } }
+        val labeledCount = (if (video.labelId.isNotBlank() && video.keyframes.any { it.visible && it.roi != null }) 1 else 0) +
+            video.additionalAois.count { track -> track.labelId.isNotBlank() && track.keyframes.any { it.visible && it.roi != null } }
         val totalCount = 1 + video.additionalAois.size
         text = when {
-            ready -> "✓ READY · $labeledCount of $totalCount boxes labeled"
+            ready -> "✓ Ready · $labeledCount AOIs"
             !video.target.availableForAuthoring -> "! ACTION REQUIRED · Select a new body region"
-            else -> "○ NEEDS LABELING · $labeledCount of $totalCount boxes labeled"
+            else -> "Needs labels · $labeledCount/$totalCount AOIs"
         }
-        textSize = 14f
+        textSize = 13f
         setTextColor(if (ready) 0xFFB8F5CD.toInt() else 0xFFFFD3A1.toInt())
-        setPadding(dp(12), dp(10), dp(12), dp(10))
+        setPadding(dp(10), dp(6), dp(10), dp(6))
         background = GradientDrawable().apply {
             cornerRadius = dp(10).toFloat()
             setColor(if (ready) 0xFF183A2A.toInt() else 0xFF3A2C1D.toInt())

@@ -70,12 +70,13 @@ class MainActivity : ComponentActivity() {
         overlayView = FaceOverlayView(this)
         calibrationView = GazeCalibrationView(this)
         calibrationView.onStageChanged = ::onExperimentStageChanged
-        val experiment = ExperimentStore(this).load()
+        val experiment = ExperimentStore(this).load(intent.getStringExtra(EXTRA_VERSION_ID))
+        val presentationMode = intent.getStringExtra(EXTRA_PRESENTATION_MODE) ?: MODE_READY
         videoExperimentView = VideoExperimentView(this).apply {
             onExit = { finish() }
         }
         if (experiment.status == Experiment.STATUS_PUBLISHED && experiment.videos.isNotEmpty()) {
-            calibrationView.onStartVideoExperiment = { videoExperimentView.start(experiment) }
+            calibrationView.onStartVideoExperiment = { videoExperimentView.start(experiment, presentationMode) }
             calibrationView.onVideoGaze = videoExperimentView::onGaze
         }
         statusView = TextView(this).apply {

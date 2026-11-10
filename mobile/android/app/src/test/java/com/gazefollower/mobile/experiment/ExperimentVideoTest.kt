@@ -97,7 +97,7 @@ class ExperimentVideoTest {
 
         val active = subject.activeAoisAt(500)
 
-        assertEquals(listOf(BodyTarget.HEAD, BodyTarget.CHEST), active.map { it.first })
+        assertEquals(listOf(BodyTarget.HEAD.name, BodyTarget.CHEST.name), active.map { it.first })
         assertEquals(2, active.size)
     }
 
@@ -114,7 +114,16 @@ class ExperimentVideoTest {
             ),
         )
 
-        assertEquals(listOf(BodyTarget.HEAD), subject.activeAoisAt(500).map { it.first })
+        assertEquals(listOf(BodyTarget.HEAD.name), subject.activeAoisAt(500).map { it.first })
+    }
+
+    @Test
+    fun activeAoisUseReusableCustomLabelIds() {
+        val subject = video(RoiKeyframe(0, true, NormalizedRoi(0.1f, 0.1f, 0.3f, 0.3f))).apply {
+            labelId = "custom-shoulder"
+        }
+
+        assertEquals(listOf("custom-shoulder"), subject.activeAoisAt(100).map { it.first })
     }
 
     @Test
