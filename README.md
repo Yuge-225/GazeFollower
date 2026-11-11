@@ -1,98 +1,90 @@
-# GazeFollower: Desktop Experiments and Android Gaze Tracking
+# GazeFollower: Desktop and Android Gaze Experiments
 
-This repository extends [the original GazeFollower project](https://github.com/GanchengZhu/GazeFollower) with a structured desktop experiment workflow and an Android implementation for on-device gaze tracking.
+This repository extends the [original GazeFollower project](https://github.com/GanchengZhu/GazeFollower) with structured desktop experiments and an Android app for on-device, free-viewing gaze studies.
 
-The first mobile target is the **Samsung Galaxy A10 (SM-A105M)** running **Android 9** with a 32-bit `armeabi-v7a` userspace.
+The Android app currently supports experiment authoring, multi-AOI video annotation, participant calibration and validation, Ready/Scroll video presentation, gaze replay, attention summaries, and session-level CSV/JSON results.
 
-> This is a research prototype. Live gaze feedback and heatmaps are intended for qualitative inspection, not clinical use or accuracy measurement.
+> GazeFollower is a research prototype. It is not a clinical system or a replacement for a dedicated infrared eye tracker.
 
 ## Contents
 
-- [What We Added](#what-we-added)
-- [Mobile Workflow](#mobile-workflow)
-- [Detailed Android App Workflow](docs/ANDROID_APP_WORKFLOW.md)
-- [Desktop Workflow](#desktop-workflow)
+- [Android App](#android-app)
+- [Android Workflow](#android-workflow)
+- [Model and Calibration](#model-and-calibration)
 - [Android Quick Start](#android-quick-start)
-- [Desktop Quick Start](#desktop-quick-start)
+- [Desktop App](#desktop-app)
 - [Data Outputs](#data-outputs)
 - [Project Structure](#project-structure)
 - [Testing](#testing)
-- [Current Status](#current-status)
 - [Privacy](#privacy)
 - [Acknowledgements and License](#acknowledgements-and-license)
 
-## What We Added
+## Android App
 
-### Android deployment
+### Experiment authoring
 
-- Front-camera preview with CameraX.
-- MediaPipe face landmarks and face/eye region tracking.
-- Single-frame inference with the existing `base.mnn` model.
-- Native MNN inference through a Kotlin/C++ JNI bridge.
-- Nine-point mobile calibration with animated targets.
-- Calibrated gaze-point display.
-- Human-body Live Test with a full-screen gaze heatmap.
-- Current body-region feedback, screen coordinates, and sample counts.
-- A result screen showing the dominant body region.
+- Create, copy, rename, archive, and delete experiment versions.
+- Import up to five local stimulus videos per version.
+- Add multiple AOI bounding boxes to each video.
+- Assign reusable labels such as Head, Chest, Abdomen, Arm, Leg, and Foot.
+- Pause playback, seek to a timestamp, and update moving AOIs with keyframes.
+- Display multiple AOIs with label-specific colors.
+- Publish completed versions for participant testing.
 
-### Desktop experiment workflow
+### Participant testing
 
-- A launcher for participant and session setup.
-- Independent Validation and Live Test modes.
-- Validation without gaze feedback to reduce measurement bias.
-- Human-body gaze feedback and heatmap visualization.
-- Session-based CSV, JSON, and image outputs.
-- Configurable face alignment, calibration method, display, and processing mode.
+- Front-camera preview with face and eye-region boxes.
+- MediaPipe face landmark and eye-region localization.
+- Real-time `base.mnn` gaze inference through MNN and JNI.
+- Animated nine-point personal calibration.
+- Five-point validation with a visual accuracy summary.
+- Free-viewing stimulus presentation in Ready Mode or Scroll Mode.
+- Hidden camera preview, gaze marker, and AOI truth during video testing.
 
-### Shared inference behavior
+### Results
 
-The desktop and Android implementations use the same core model assumptions:
+- Overall attention distribution by AOI label.
+- Per-video captured, valid, and excluded sample counts.
+- Exact and tolerance-expanded AOI hit rates.
+- Mean distance to the nearest exact AOI.
+- Synchronized video replay with AOI boxes, gaze points, and heatmap.
+- Scroll cutoff handling: gaze data after the accepted swipe is not scored.
+- Version-specific test history and historical replay.
+
+## Android Workflow
+
+```text
+Manage Versions
+    ↓
+Create Version → Add Videos → Annotate AOIs → Publish
+    ↓
+Start a Test
+    ↓
+Preview → 9-Point Calibration → 5-Point Validation
+    ↓
+Ready Mode or Scroll Mode
+    ↓
+Result Dashboard → Per-Video Replay → Test History
+```
+
+The experiment is **free viewing**: participants watch the videos naturally and are not instructed to look at a particular body region. AOI annotations are hidden during testing and used only for later analysis.
+
+See [Android App Workflow](docs/ANDROID_APP_WORKFLOW.md) for the step-by-step user guide.
+
+## Model and Calibration
+
+The desktop and Android implementations share the same main model assumptions:
 
 - Face input: `224 × 224`.
 - Left and right eye inputs: `112 × 112`.
 - Right-eye crop is horizontally flipped.
-- Image values use BGR channel order and `[0, 1]` normalization.
-- Face and eye rectangles are provided as normalized model inputs.
-- Android uses the same `base.mnn` model stored under `gazefollower/res/model_weights/`.
+- Input images use BGR channel order and `[0, 1]` normalization.
+- Face and eye rectangles are included as normalized model inputs.
+- Android uses `gazefollower/res/model_weights/base.mnn`.
 
-## Mobile Workflow
+On Android, CameraX supplies front-camera frames. MediaPipe locates the face and eye regions, MNN produces gaze features, and a participant-specific ridge-regression calibration maps those features to normalized screen coordinates.
 
-![Synthetic mobile UI workflow](docs/images/mobile_workflow_mockup.svg)
-
-*Synthetic UI mockup with a male vector anime character. It contains no participant image or recorded gaze data.*
-
-| Stage | Behavior |
-| --- | --- |
-| **1. Preview** | Shows the front camera, face box, eye boxes, frame count, and FPS. |
-| **2. Calibration** | Hides the camera preview while analysis continues. Nine animated targets collect personal calibration samples. |
-| **3. Calibration Result** | Confirms calibration and offers Live Test or recalibration. |
-| **4. Body Live Test** | Displays a body diagram, calibrated gaze marker, full-screen heatmap, body region, coordinates, and sample counts. |
-| **5. Heatmap Result** | Freezes the heatmap and reports the dominant body region. |
-
-The heatmap accepts every valid gaze prediction inside the screen. Body transparency is used only to classify the current body region; it does not limit heatmap coverage.
-
-## Desktop Workflow
-
-The desktop launcher follows this sequence:
-
-```text
-Session setup → Camera preview → Personal calibration
-                                  ├─ Validation → Accuracy results
-                                  └─ Live Test  → Body heatmap results
-```
-
-### Validation
-
-- Uses independent target points.
-- Hides gaze predictions during measurement.
-- Calculates pixel error, valid rate, and summary statistics.
-
-### Live Test
-
-- Displays a front-facing body model.
-- Shows the current gaze location and body region.
-- Accumulates a qualitative gaze heatmap.
-- Records frame-level predictions and session statistics.
+Calibration uses nine screen positions. Validation uses five independent positions and must pass before the video experiment begins.
 
 ## Android Quick Start
 
@@ -101,10 +93,20 @@ Session setup → Camera preview → Personal calibration
 - Android Studio or Android SDK command-line tools.
 - JDK 17.
 - Android SDK 34.
-- CMake 3.22.1 and Android NDK.
-- A USB-debuggable Android device.
+- CMake 3.22.1.
+- Android NDK r28c (`28.2.13676358`).
+- An Android device with a front camera and USB debugging enabled.
 
-The current native package targets `armeabi-v7a` for the Galaxy A10.
+The APK packages native libraries for both `armeabi-v7a` and `arm64-v8a`.
+
+### Verified devices
+
+| Device | Android | ABI | Display |
+| --- | --- | --- | --- |
+| Google Pixel 9 (`tokay`) | Android 16 | `arm64-v8a` | 1080 × 2424 |
+| Samsung Galaxy A10 (SM-A105M) | Android 9 | `armeabi-v7a` | 720 × 1520 |
+
+Pixel 9 is the current primary development and demonstration device. Galaxy A10 compatibility is retained.
 
 ### Build
 
@@ -113,19 +115,31 @@ cd mobile/android
 ANDROID_USER_HOME="$PWD/.android-home" ./gradlew assembleDebug
 ```
 
-The first native build downloads the pinned MNN Android library and headers. Later builds reuse the local Gradle/CMake cache.
+The first native build downloads the pinned MNN Android library and headers. Later builds reuse the local Gradle and CMake caches.
 
 ### Install and launch
 
 ```bash
 adb devices -l
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.gazefollower.mobile/.MainActivity
+adb shell am start -n com.gazefollower.mobile/.HomeActivity
 ```
 
-More Android-specific details are available in [mobile/android/README.md](mobile/android/README.md).
+The installed app can be opened directly from the phone without reconnecting it to a computer. Imported videos, experiment versions, and saved results remain available until the app is uninstalled or its storage is cleared.
 
-## Desktop Quick Start
+More build and implementation details are available in [mobile/android/README.md](mobile/android/README.md).
+
+## Desktop App
+
+The desktop workflow remains available for camera preview, personal calibration, validation, and the human-body Live Test.
+
+```text
+Session Setup → Camera Preview → Personal Calibration
+                                   ├─ Validation → Accuracy Results
+                                   └─ Live Test  → Body Heatmap Results
+```
+
+### Desktop quick start
 
 The tested macOS setup uses Python 3.10 on Apple Silicon.
 
@@ -137,60 +151,58 @@ python -m pip install -r requirements-macos-arm64.txt
 python example/gui_launcher.py
 ```
 
-On macOS, the launcher can also be opened by double-clicking `run_gui.command`.
+The launcher can also be opened on macOS with `run_gui.command`.
 
 ## Data Outputs
+
+### Android video experiments
+
+Each completed Android test creates an app-private session directory:
+
+```text
+files/sessions/<session-id>/
+├── session_summary.json
+└── gaze_samples.csv
+```
+
+- `session_summary.json` stores the experiment snapshot, presentation mode, per-video sample counts, AOI metrics, attention distribution, and Scroll Mode cutoffs.
+- `gaze_samples.csv` stores the valid scored gaze samples with video timestamps, screen/video coordinates, AOI hits, labels, and distance values.
+
+The files are generated and used by the app. A user-facing share/export action is not currently provided.
+
+### Desktop experiments
 
 Desktop sessions are stored under:
 
 ```text
-results/<participant_id>/<session_id>/
+results/<participant-id>/<session-id>/
 ```
 
-### Validation session
-
-| File | Contents |
-| --- | --- |
-| `gaze_samples.csv` | Frame-level SDK output. |
-| `validation.csv` | Targets, predictions, validity, and pixel error. |
-| `summary.json` | Configuration and aggregate metrics. |
-| `validation_plot.png` | Target and predicted-gaze visualization. |
-| `calibration_model/` | Session-specific calibration model. |
-
-### Live Test session
-
-| File | Contents |
-| --- | --- |
-| `gaze_samples.csv` | Frame-level SDK output. |
-| `live_predictions.csv` | Predicted coordinates, body region, and tracking state. |
-| `live_heatmap.png` | Final qualitative heatmap. |
-| `summary.json` | Session duration, valid rate, FPS, and region statistics. |
-
-Android CSV/JSON export is not implemented yet.
+Depending on the selected desktop workflow, the directory can contain gaze samples, validation measurements, summary JSON, calibration data, and heatmap images.
 
 ## Project Structure
 
 ```text
 GazeFollower/
-├── gazefollower/                 # Original Python package and shared assets
-├── example/
-│   ├── gui_launcher.py           # Desktop experiment launcher
-│   └── experiment_runner.py      # Validation and Live Test workflows
-├── mobile/android/               # Android application
+├── gazefollower/                  # Original Python package and shared model assets
+├── example/                       # Desktop launcher and experiment workflows
+├── mobile/android/                # Android application
 │   └── app/src/main/
-│       ├── java/                 # Camera, MediaPipe, calibration, and UI
-│       └── cpp/                  # MNN JNI bridge
-├── tests/                        # Desktop tests
-└── docs/images/                  # Documentation-only synthetic graphics
+│       ├── java/                  # UI, camera, calibration, experiments, and results
+│       └── cpp/                   # MNN JNI bridge
+├── docs/
+│   ├── ANDROID_APP_WORKFLOW.md    # Android user workflow
+│   └── images/                    # Documentation-only synthetic graphics
+└── tests/                         # Desktop tests
 ```
 
 ## Testing
 
-### Android unit tests
+### Android unit tests and APK
 
 ```bash
 cd mobile/android
-ANDROID_USER_HOME="$PWD/.android-home" ./gradlew testDebugUnitTest
+ANDROID_USER_HOME="$PWD/.android-home" ./gradlew testDebugUnitTest assembleDebug
 ```
 
 ### Android device tests
@@ -208,31 +220,17 @@ ANDROID_USER_HOME="$PWD/.android-home" ./gradlew connectedDebugAndroidTest
 pytest tests
 ```
 
-## Current Status
-
-| Component | Status |
-| --- | --- |
-| Desktop preview and calibration | Complete |
-| Desktop validation and exports | Complete |
-| Desktop human-body Live Test | Complete |
-| Android camera and MediaPipe tracking | Complete |
-| Android `base.mnn` inference | Complete |
-| Android nine-point calibration | Complete |
-| Android full-screen Live Test heatmap | Complete |
-| Android validation workflow | Planned |
-| Android CSV/JSON and heatmap export | Planned |
-| Android calibration persistence | Planned |
-
 ## Privacy
 
-- Documentation must not include participant faces or identifiable test-session screenshots.
-- The workflow image in this README is a synthetic vector mockup.
-- Camera frames are processed locally by the current prototype.
-- Researchers are responsible for consent, data handling, retention, and institutional requirements.
+- Camera frames are processed locally by the current Android prototype.
+- Imported videos, annotations, and test results are stored in app-private storage.
+- Documentation must not contain participant faces or identifiable test-session screenshots.
+- The synthetic workflow graphic contains no participant image or recorded gaze data.
+- Researchers are responsible for consent, retention, access control, and institutional requirements.
 
 ## Acknowledgements and License
 
-This project is derived from [GanchengZhu/GazeFollower](https://github.com/GanchengZhu/GazeFollower). The original project provides the gaze-tracking architecture, model integration, calibration framework, and Python API on which this work is based.
+This project is derived from [GanchengZhu/GazeFollower](https://github.com/GanchengZhu/GazeFollower). The upstream project provides the gaze-tracking architecture, model integration, calibration framework, and Python API on which this work is based.
 
 Please cite the upstream project when using this derivative work:
 

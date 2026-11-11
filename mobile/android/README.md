@@ -1,100 +1,170 @@
 # GazeFollower Mobile — Android
 
-Android implementation of the GazeFollower validation and live-test workflow.
-The verified devices are a Samsung Galaxy A10 running Android 9 and a Google
-Pixel 9 running Android 16. The first release is portrait-only so camera,
-calibration, and screen coordinates have one unambiguous orientation.
+This directory contains the Android implementation of GazeFollower. The app supports on-device gaze inference, experiment authoring, participant calibration and validation, free-viewing video tests, and per-video result replay.
 
-## Verified device baseline
+For user-facing operation instructions, see [Android App Workflow](../../docs/ANDROID_APP_WORKFLOW.md).
 
-| Property | Galaxy A10 | Pixel 9 |
+## Current Workflow
+
+```text
+Create Version → Import Videos → Annotate Multiple AOIs → Publish
+       ↓
+Preview → 9-Point Calibration → 5-Point Validation
+       ↓
+Ready Mode or Scroll Mode
+       ↓
+Attention Dashboard → Per-Video Replay → Test History
+```
+
+### Authoring
+
+- Create and manage independent experiment versions.
+- Import up to five videos per version.
+- Add multiple AOI bounding boxes to the same video.
+- Assign reusable labels and label-specific colors.
+- Pause, seek, and update boxes with timestamped keyframes.
+- Publish only after every configured box has a label and visible position.
+
+### Testing
+
+- **Ready Mode:** the user confirms readiness before every video.
+- **Scroll Mode:** the user swipes upward to leave the current video. Data after the swipe cutoff is not collected or scored for that video.
+- Both modes are free viewing; AOIs and gaze predictions are hidden during stimulus presentation.
+
+### Results
+
+- Attention distribution by AOI label and Outside AOIs.
+- Source-video, captured-gaze, valid, and excluded sample counts.
+- Exact and tolerance-expanded AOI hit rates.
+- Mean pixel distance to the nearest exact AOI.
+- Replay with colored AOIs, gaze points, heatmap, and Scroll Mode cutoff.
+- Version-specific test history using the experiment snapshot saved with each session.
+
+## Gaze Pipeline
+
+```text
+CameraX front-camera frame
+        ↓
+MediaPipe face landmarks
+        ↓
+Face + left eye + right eye crops
+        ↓
+MNN `base.mnn` inference
+        ↓
+Ridge-regression screen calibration
+        ↓
+Normalized gaze position
+```
+
+The Android input behavior follows the desktop model assumptions:
+
+- Face input: `224 × 224`.
+- Eye inputs: `112 × 112`.
+- Right eye is horizontally flipped.
+- BGR channel order with `[0, 1]` normalization.
+- Normalized face and eye rectangles are included as model inputs.
+
+The existing model is loaded from `gazefollower/res/model_weights/base.mnn`; it is not duplicated in the Android source tree.
+
+## Calibration and Validation
+
+### Nine-point calibration
+
+1. Keep the phone in portrait orientation and the full face visible.
+2. Confirm that the face and both eye boxes track correctly.
+3. Tap **Start 9-point calibration**.
+4. Look at the center of each animated target.
+5. Keep the device position and viewing distance stable.
+
+For each point, the app ignores three warm-up predictions and collects eight samples. The resulting 72 samples fit a ridge-regression mapping from model features to normalized screen coordinates.
+
+### Five-point validation
+
+Validation uses five independent screen positions. During collection, only the target is shown; gaze feedback, text, and sample progress are hidden to avoid attracting the participant's gaze.
+
+Validation passes when:
+
+- at least 70% of samples are within a normalized radius of 12%; and
+- mean normalized error is no greater than 15%.
+
+A failed validation can be repeated, or the participant can return to calibration.
+
+## Scoring
+
+A gaze prediction is counted as a valid scored sample when:
+
+```text
+video timestamp >= 500 ms
+AND
+at least one AOI is visible at that timestamp
+```
+
+The main result metrics are:
+
+- **Captured gaze samples:** successful predictions received while the video is being collected.
+- **Valid samples:** captured predictions that meet the scoring conditions.
+- **Excluded samples:** captured minus valid samples.
+- **Strict hits:** valid samples inside an exact AOI.
+- **Tolerant hits:** valid samples inside an AOI expanded by 20% overall.
+- **Mean distance:** mean pixel distance to the nearest exact AOI boundary; samples inside an exact AOI have zero distance.
+
+When exact AOIs overlap, a gaze point inside more than one box is assigned to the smallest matching box for the attention distribution.
+
+## Device Baseline
+
+| Property | Google Pixel 9 | Samsung Galaxy A10 |
 | --- | --- | --- |
-| Model | Samsung SM-A105M | Google Pixel 9 (`tokay`) |
-| Android API | 28 | 36 |
-| Primary ABI | `armeabi-v7a` | `arm64-v8a` |
-| Physical display | 720 × 1520 | 1080 × 2424 |
-| Physical density | 280 dpi | 420 dpi |
+| Device | `tokay` | SM-A105M |
+| Android | 16 | 9 |
+| API | 36 | 28 |
+| Primary ABI | `arm64-v8a` | `armeabi-v7a` |
+| Display | 1080 × 2424 | 720 × 1520 |
 
-The application packages native dependencies for both `armeabi-v7a` and
-`arm64-v8a`. Runtime calibration uses the actual application viewport rather
-than assuming the full physical display, because status/navigation insets can
-reduce usable pixels.
+Pixel 9 is the current primary development and demonstration device. The APK also retains Galaxy A10 compatibility.
 
-## Scope
+The application is portrait-only. Runtime calibration uses the actual app viewport rather than assuming the full physical display size.
 
-1. Front-camera preview.
-2. MediaPipe face and eye-region localization.
-3. `base.mnn` gaze inference.
-4. Nine-point calibration with an animated target and calibrated gaze mapping.
-5. Validation with CSV/JSON export.
-6. Human-body live test with a real-time gaze heatmap and result screen.
+## Build Requirements
 
-## Author and run workflow
+- JDK 17.
+- Android SDK 34.
+- Android min SDK 28.
+- Android target SDK 34.
+- CMake 3.22.1.
+- NDK `28.2.13676358`.
 
-The launcher separates experiment preparation from participant testing:
+The native build packages both `arm64-v8a` and `armeabi-v7a`. NDK r28c provides current 64-bit alignment support.
 
-- **Author Experiment** imports up to five local videos, assigns one target
-  body region to each video (`Head`, `Chest`, `Abdomen`, `Leg`, or `Foot`), and
-  stores normalized rectangular ROI keyframes. Each saved box remains active
-  until the next edit. Authors can pause playback, drag the replay progress bar
-  to a specific frame, adjust the box, review the result, and publish a version.
-- **Run Experiment** is enabled only for a published experiment. It retains the
-  existing front-camera preview and nine-point calibration, then presents the
-  authored trials without showing the camera preview, gaze marker, or truth
-  ROI. The first 500 ms of each video is excluded from scoring.
+The first build downloads the pinned MNN 3.6.1 Android library and matching public headers. CMake verifies the downloaded files with pinned SHA-256 values and later builds reuse the local cache.
 
-The result dashboard reports strict and 20%-expanded ROI hit rates, per-video
-sample counts, and mean distance to the target ROI. Each video opens a detail
-view with a synchronized replay, cumulative gaze heatmap, truth ROI, and plain-
-language metric definitions. Each completed run writes a `session_summary.json`
-and `gaze_samples.csv` under the app's private `files/sessions/<session-id>`
-directory. Imported videos and annotation JSON stay in app-private storage and
-are not added to Git.
+## Build
 
-ROI annotation uses manually selected change points rather than requiring a box
-on every decoded frame. Exact codec-frame stepping and automatic pose tracking
-are deferred.
+Open this `mobile/android` directory as the Android Studio project root, or build from the command line:
 
-## Open in Android Studio
+```bash
+cd mobile/android
+ANDROID_USER_HOME="$PWD/.android-home" ./gradlew testDebugUnitTest assembleDebug
+```
 
-Open this `mobile/android` directory as the project root. The build maps the
-existing files in `gazefollower/res/model_weights` and `gazefollower/res/image`
-into the Android asset set, avoiding duplicate model weights in Git.
+The debug APK is generated at:
 
-The first native build downloads the official MNN 3.6.1 Android release and
-its matching public headers from Alibaba's GitHub release. CMake verifies the
-downloaded archive and every header with pinned SHA-256 values, then packages
-the matching CPU library for each configured ABI. The project uses NDK r28c so
-its native output supports 16 KB ELF alignment on current 64-bit Android
-devices. Later builds use the copy cached under the ignored `.cxx` build
-directory.
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
 
-## Nine-point calibration
+## Install and Launch
 
-1. Hold the phone in the same portrait position that will be used for testing.
-2. Keep the complete face visible until all three face/eye rectangles track.
-3. Tap **Start 9-point calibration**. The camera preview and face rectangles
-   fade out, while camera analysis continues in the background.
-4. Look at the red center of each animated target without following it with
-   the phone. The outer ring shows collection progress.
-5. Each point waits for three valid inference frames, then collects eight.
-6. After point 9, choose **Start body Live Test** or **Recalibrate**. Live Test
-   places the calibrated marker over the body diagram and accumulates a
-   full-screen heatmap. A panel reports the body region under the current gaze,
-   screen coordinates, and sample counts. Tap **Finish** to freeze the result,
-   **Clear** to reset the current heatmap, or **Preview** on the result screen
-   to return to the camera.
-
-Calibration currently lives for the running app session. Persistence and
-export are intentionally deferred to the validation/export milestone.
-
-## Device check
-
-Enable USB debugging, connect the phone, accept its RSA authorization prompt,
-then run:
+Enable USB debugging, connect the device, and accept its RSA authorization prompt.
 
 ```bash
 adb devices -l
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.gazefollower.mobile/.HomeActivity
+```
+
+Useful device checks:
+
+```bash
 adb shell getprop ro.product.cpu.abi
 adb shell getprop ro.product.cpu.abilist
 adb shell getprop ro.build.version.sdk
@@ -102,15 +172,30 @@ adb shell wm size
 adb shell wm density
 ```
 
-The ABI result determines whether the first native MNN build targets
-`arm64-v8a`, `armeabi-v7a`, or both.
+After installation, the app can run directly on the phone without a computer connection.
 
-## Milestones
+## Session Data
 
-- M0: reproducible Android 9/16 build and installation on Galaxy A10 and Pixel 9. **Complete.**
-- M1: front-camera preview and frame timestamps. **Complete.**
-- M2: MediaPipe landmarks and face/eye crops. **Complete.**
-- M3: desktop/mobile MNN inference parity. **Complete for fixed single-frame crops.**
-- M4: nine-point calibration and gaze overlay. **Complete for the first on-device flow.**
-- M5: validation and session export.
-- M6: human-body live test and heatmap export. **In progress: live heatmap UI complete; export pending.**
+Each completed video experiment creates:
+
+```text
+files/sessions/<session-id>/
+├── session_summary.json
+└── gaze_samples.csv
+```
+
+`session_summary.json` contains the experiment snapshot, mode, timestamps, per-video counts, AOI metrics, attention distribution, and swipe cutoffs.
+
+`gaze_samples.csv` contains valid scored samples with video timestamps, gaze coordinates, AOI matches, hit flags, and distance values.
+
+Experiment versions, imported videos, reusable labels, annotations, and results are stored in app-private storage. They survive USB disconnection and normal app restarts, but are removed if the app is uninstalled or its storage is cleared.
+
+A user-facing file share/export action is not currently implemented.
+
+## Known Limitations
+
+- Calibration is performed for each new test and is not reused across sessions.
+- AOI motion is manually annotated with keyframes; automatic person or pose tracking is not implemented.
+- RGB-camera gaze estimation is sensitive to lighting, head movement, viewing distance, and camera position.
+- Real-time inference does not necessarily process every front-camera frame.
+- Result heatmaps and metrics are research outputs, not clinical measurements.
