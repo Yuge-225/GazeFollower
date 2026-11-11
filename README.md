@@ -10,6 +10,7 @@ The first mobile target is the **Samsung Galaxy A10 (SM-A105M)** running **Andro
 
 - [What We Added](#what-we-added)
 - [Mobile Workflow](#mobile-workflow)
+- [Detailed Android App Workflow](docs/ANDROID_APP_WORKFLOW.md)
 - [Desktop Workflow](#desktop-workflow)
 - [Android Quick Start](#android-quick-start)
 - [Desktop Quick Start](#desktop-quick-start)
