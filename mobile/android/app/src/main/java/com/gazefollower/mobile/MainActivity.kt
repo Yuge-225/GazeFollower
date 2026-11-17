@@ -2,6 +2,7 @@ package com.gazefollower.mobile
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
@@ -9,6 +10,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.Button
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,6 +43,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var overlayView: FaceOverlayView
     private lateinit var statusView: TextView
     private lateinit var calibrationView: GazeCalibrationView
+    private lateinit var startCalibrationButton: Button
     private lateinit var videoExperimentView: VideoExperimentView
     private lateinit var analysisExecutor: ExecutorService
     private var faceProcessor: FaceLandmarkerProcessor? = null
@@ -72,11 +75,14 @@ class MainActivity : ComponentActivity() {
         calibrationView.onStageChanged = ::onExperimentStageChanged
         val experiment = ExperimentStore(this).load(intent.getStringExtra(EXTRA_VERSION_ID))
         val presentationMode = intent.getStringExtra(EXTRA_PRESENTATION_MODE) ?: MODE_READY
+        val participantCode = intent.getStringExtra(EXTRA_PARTICIPANT_CODE).orEmpty()
         videoExperimentView = VideoExperimentView(this).apply {
             onExit = { finish() }
         }
-        if (experiment.status == Experiment.STATUS_PUBLISHED && experiment.videos.isNotEmpty()) {
-            calibrationView.onStartVideoExperiment = { videoExperimentView.start(experiment, presentationMode) }
+        if (experiment.status == Experiment.STATUS_PUBLISHED && experiment.videos.isNotEmpty() && PARTICIPANT_CODE.matches(participantCode)) {
+            calibrationView.onStartVideoExperiment = { validation ->
+                videoExperimentView.start(experiment, presentationMode, participantCode, validation)
+            }
             calibrationView.onVideoGaze = videoExperimentView::onGaze
         }
         statusView = TextView(this).apply {
@@ -86,6 +92,16 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(0xB3101216.toInt())
             setPadding(24, 16, 24, 16)
             gravity = Gravity.CENTER
+        }
+        val density = resources.displayMetrics.density
+        startCalibrationButton = Button(this).apply {
+            text = "Start 9-point calibration"
+            textSize = 20f
+            isAllCaps = false
+            minHeight = (60 * density).toInt()
+            setTextColor(getColor(R.color.button_text))
+            backgroundTintList = ColorStateList.valueOf(getColor(R.color.button_background))
+            setOnClickListener { calibrationView.beginFromPreview() }
         }
 
         val root = FrameLayout(this).apply {
@@ -107,6 +123,15 @@ class MainActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM,
             ))
+            addView(startCalibrationButton, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP,
+            ).apply {
+                topMargin = (18 * density).toInt()
+                marginStart = (20 * density).toInt()
+                marginEnd = (20 * density).toInt()
+            })
             addView(videoExperimentView, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -125,6 +150,7 @@ class MainActivity : ComponentActivity() {
 
     private fun onExperimentStageChanged(stage: GazeCalibrationView.Stage) {
         val targetAlpha = if (stage == GazeCalibrationView.Stage.PREVIEW) 1f else 0f
+        startCalibrationButton.visibility = if (stage == GazeCalibrationView.Stage.PREVIEW) View.VISIBLE else View.GONE
         listOf<View>(previewView, overlayView, statusView).forEach { view ->
             view.animate()
                 .alpha(targetAlpha)

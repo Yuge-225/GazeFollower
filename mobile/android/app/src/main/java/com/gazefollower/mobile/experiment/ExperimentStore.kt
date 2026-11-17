@@ -380,7 +380,14 @@ class ExperimentStore(private val context: Context) {
         val references = list(includeArchived = true)
             .sumOf { experiment -> experiment.videos.count { it.localPath == video.localPath } }
         val referencedElsewhere = references > 1
-        if (!referencedElsewhere) File(video.localPath).delete()
+        val usedBySession = File(context.filesDir, "sessions").listFiles().orEmpty().any { directory ->
+            val videos = runCatching {
+                JSONObject(directory.resolve("session_summary.json").readText())
+                    .optJSONObject("experimentSnapshot")?.optJSONArray("videos")
+            }.getOrNull()
+            (0 until (videos?.length() ?: 0)).any { videos?.optJSONObject(it)?.optString("localPath") == video.localPath }
+        }
+        if (!referencedElsewhere && !usedBySession) File(video.localPath).delete()
     }
 
     private fun encode(experiment: Experiment): JSONObject = JSONObject().apply {

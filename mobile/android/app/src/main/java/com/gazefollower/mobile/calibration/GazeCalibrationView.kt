@@ -13,6 +13,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 import com.gazefollower.mobile.inference.GazeInferenceResult
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.PI
 import kotlin.math.max
 import kotlin.math.min
@@ -32,7 +34,7 @@ class GazeCalibrationView(context: Context) : View(context) {
     enum class Stage { PREVIEW, CALIBRATION, CALIBRATION_RESULT, VALIDATION, VALIDATION_RESULT, VIDEO_TEST, LIVE_TEST, HEATMAP_RESULT }
 
     var onStageChanged: ((Stage) -> Unit)? = null
-    var onStartVideoExperiment: (() -> Unit)? = null
+    var onStartVideoExperiment: ((JSONObject) -> Unit)? = null
     var onVideoGaze: ((Float, Float) -> Unit)? = null
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -177,7 +179,28 @@ class GazeCalibrationView(context: Context) : View(context) {
         val startVideo = onStartVideoExperiment
         if (startVideo == null) startLiveTest() else {
             transitionTo(Stage.VIDEO_TEST)
-            startVideo()
+            startVideo(JSONObject().apply {
+                put("passed", validationPassed)
+                put("sampleCount", validationErrors.size)
+                put("hits", validationHits)
+                put("hitRate", validationHits.toDouble() / validationErrors.size)
+                put("meanNormalizedError", validationErrors.average())
+                put("hitRadius", VALIDATION_HIT_RADIUS.toDouble())
+                put("minHitRate", VALIDATION_MIN_HIT_RATE.toDouble())
+                put("maxMeanError", VALIDATION_MAX_MEAN_ERROR.toDouble())
+                put("samples", JSONArray().apply {
+                    validationObservations.forEach { sample ->
+                        put(JSONObject().apply {
+                            put("targetIndex", sample.pointIndex)
+                            put("targetX", sample.targetX.toDouble())
+                            put("targetY", sample.targetY.toDouble())
+                            put("gazeX", sample.predictedX.toDouble())
+                            put("gazeY", sample.predictedY.toDouble())
+                            put("error", sample.error.toDouble())
+                        })
+                    }
+                })
+            })
         }
     }
 
@@ -257,7 +280,7 @@ class GazeCalibrationView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.action != MotionEvent.ACTION_UP) return true
         when (stage) {
-            Stage.PREVIEW -> if (primaryButton.contains(event.x, event.y)) startCalibration()
+            Stage.PREVIEW -> Unit
             Stage.CALIBRATION -> Unit
             Stage.CALIBRATION_RESULT -> when {
                 primaryButton.contains(event.x, event.y) -> startValidation()
@@ -297,7 +320,7 @@ class GazeCalibrationView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         when (stage) {
-            Stage.PREVIEW -> drawPreviewControls(canvas)
+            Stage.PREVIEW -> Unit
             Stage.CALIBRATION -> drawCalibration(canvas)
             Stage.CALIBRATION_RESULT -> drawCalibrationResult(canvas)
             Stage.VALIDATION -> drawValidation(canvas)
@@ -308,14 +331,28 @@ class GazeCalibrationView(context: Context) : View(context) {
         }
     }
 
-    private fun drawPreviewControls(canvas: Canvas) {
-        primaryButton.set(width * 0.22f, 24f, width * 0.78f, 104f)
-        drawButton(canvas, primaryButton, "Start 9-point calibration", true)
+    @Synchronized
+    fun beginFromPreview() {
+        if (stage == Stage.PREVIEW) startCalibration()
+    }
+
+    private fun dp(value: Float) = value * resources.displayMetrics.density
+
+    private fun drawLabel(canvas: Canvas, text: String, y: Float, size: Float, color: Int, bold: Boolean = false) {
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.CENTER
+        paint.isFakeBoldText = bold
+        paint.textSize = dp(size) * resources.configuration.fontScale.coerceAtMost(1.35f)
+        val scale = (width - dp(40f)) / paint.measureText(text)
+        if (scale in 0f..1f) paint.textSize *= scale
+        paint.color = color
+        canvas.drawText(text, width / 2f, y - (paint.ascent() + paint.descent()) / 2f, paint)
+        paint.isFakeBoldText = false
     }
 
     private fun drawCalibration(canvas: Canvas) {
         drawStageBackground(canvas)
-        drawHeader(canvas, "CALIBRATION", "Look steadily at the moving target")
+        drawLabel(canvas, "Calibration", dp(20f), 20f, Color.WHITE, bold = true)
 
         val target = targets[pointIndex.coerceAtMost(targets.lastIndex)]
         val elapsed = SystemClock.uptimeMillis() - pointChangedAt
@@ -350,31 +387,17 @@ class GazeCalibrationView(context: Context) : View(context) {
         paint.strokeCap = Paint.Cap.BUTT
         paint.style = Paint.Style.FILL
 
-        paint.textAlign = Paint.Align.CENTER
-        paint.textSize = 27f
-        paint.color = Color.WHITE
-        canvas.drawText("Point ${pointIndex + 1} of ${targets.size}", width / 2f, height - 100f, paint)
-        paint.textSize = 20f
-        paint.color = 0xFF94A3B8.toInt()
-        canvas.drawText(if (warmupFrames < WARMUP_FRAMES) "Hold your gaze" else "Keep looking at the center", width / 2f, height - 66f, paint)
+        drawLabel(canvas, "Point ${pointIndex + 1} of ${targets.size}", height - dp(48f), 18f, Color.WHITE, bold = true)
+        drawLabel(canvas, "Look at the center of the target", height - dp(22f), 15f, 0xFFCBD5E1.toInt())
         postInvalidateOnAnimation()
     }
 
     private fun drawCalibrationResult(canvas: Canvas) {
         drawStageBackground(canvas)
-        paint.textAlign = Paint.Align.CENTER
-        paint.color = 0xFF22C55E.toInt()
-        paint.textSize = 76f
-        canvas.drawText("✓", width / 2f, height * 0.31f, paint)
-        paint.color = Color.WHITE
-        paint.textSize = 36f
-        canvas.drawText("Calibration complete", width / 2f, height * 0.39f, paint)
-        paint.color = 0xFF94A3B8.toInt()
-        paint.textSize = 22f
-        canvas.drawText("72 samples · 9 screen positions", width / 2f, height * 0.44f, paint)
-
-        primaryButton.set(width * 0.16f, height * 0.57f, width * 0.84f, height * 0.57f + 88f)
-        secondaryButton.set(width * 0.16f, height * 0.57f + 108f, width * 0.84f, height * 0.57f + 196f)
+        drawLabel(canvas, "✓", height * 0.30f, 44f, 0xFF22C55E.toInt())
+        drawLabel(canvas, "Calibration complete", height * 0.40f, 27f, Color.WHITE, bold = true)
+        drawLabel(canvas, "72 samples across 9 positions", height * 0.47f, 16f, 0xFFCBD5E1.toInt())
+        setResultButtons()
         drawButton(canvas, primaryButton, "Validate calibration", true)
         drawButton(canvas, secondaryButton, "Recalibrate", false)
     }
@@ -418,15 +441,12 @@ class GazeCalibrationView(context: Context) : View(context) {
         }
         val pointsWithinTolerance = pointMeans.count { it.third <= VALIDATION_HIT_RADIUS }
 
-        paint.textAlign = Paint.Align.CENTER
-        paint.color = Color.WHITE
-        paint.textSize = 24f
-        canvas.drawText("VALIDATION RESULT", width / 2f, height * 0.045f, paint)
-        paint.color = if (validationPassed) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt()
-        paint.textSize = 36f
-        canvas.drawText(if (validationPassed) "Validation passed" else "Validation needs attention", width / 2f, height * 0.088f, paint)
-
-        val mapRect = RectF(width * 0.08f, height * 0.12f, width * 0.92f, height * 0.48f)
+        drawLabel(canvas, "Validation result", height * 0.045f, 15f, 0xFFCBD5E1.toInt())
+        drawLabel(canvas, if (validationPassed) "Validation passed" else "Validation needs attention",
+            height * 0.105f, 25f, if (validationPassed) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt(), bold = true)
+        setResultButtons()
+        val mapRect = RectF(width * 0.08f, height * 0.16f, width * 0.92f,
+            min(height * 0.49f, primaryButton.top - dp(140f)))
         paint.style = Paint.Style.FILL
         paint.color = 0xCC0F172A.toInt()
         canvas.drawRoundRect(mapRect, 24f, 24f, paint)
@@ -477,19 +497,15 @@ class GazeCalibrationView(context: Context) : View(context) {
             }
         }
 
-        paint.textAlign = Paint.Align.CENTER
-        paint.color = 0xFFCBD5E1.toInt()
-        paint.textSize = 16f
-        canvas.drawText("○ Target    ● Mean prediction    — Error", width / 2f, height * 0.515f, paint)
-        paint.textSize = 20f
-        canvas.drawText("Points within tolerance: $pointsWithinTolerance / ${validationTargets.size}", width / 2f, height * 0.56f, paint)
-        canvas.drawText("Samples within tolerance: $validationHits / $total (%.1f%%)".format(hitRate), width / 2f, height * 0.60f, paint)
-        canvas.drawText("Mean normalized error: %.1f%%".format(meanError), width / 2f, height * 0.64f, paint)
-        paint.color = 0xFF94A3B8.toInt()
-        paint.textSize = 16f
-        canvas.drawText("Pass: ≥70% within 12% normalized units and mean error ≤15%", width / 2f, height * 0.685f, paint)
-        primaryButton.set(width * 0.16f, height * 0.75f, width * 0.84f, height * 0.75f + 88f)
-        secondaryButton.set(width * 0.16f, height * 0.75f + 108f, width * 0.84f, height * 0.75f + 196f)
+        drawLabel(canvas, "○ Target    ● Mean prediction    — Error", mapRect.bottom + dp(15f), 13f, 0xFFCBD5E1.toInt())
+        drawLabel(canvas, "Targets within tolerance   $pointsWithinTolerance / ${validationTargets.size}",
+            mapRect.bottom + dp(44f), 16f, Color.WHITE)
+        drawLabel(canvas, "Samples within tolerance   $validationHits / $total (%.1f%%)".format(hitRate),
+            mapRect.bottom + dp(69f), 16f, Color.WHITE)
+        drawLabel(canvas, "Mean normalized error   %.1f%%".format(meanError),
+            mapRect.bottom + dp(94f), 16f, Color.WHITE)
+        drawLabel(canvas, "Pass: ≥70% within 12% and mean error ≤15%", mapRect.bottom + dp(121f),
+            13f, 0xFFCBD5E1.toInt())
         drawButton(canvas, primaryButton, if (validationPassed) {
             if (onStartVideoExperiment == null) "Start body Live Test" else "Start video experiment"
         } else "Repeat validation", true)
@@ -546,6 +562,14 @@ class GazeCalibrationView(context: Context) : View(context) {
         canvas.drawText(subtitle, width / 2f, 82f, paint)
     }
 
+    private fun setResultButtons() {
+        val margin = dp(20f)
+        val bottom = height - dp(20f)
+        secondaryButton.set(margin, bottom - dp(52f), width - margin, bottom)
+        val primaryBottom = secondaryButton.top - dp(12f)
+        primaryButton.set(margin, primaryBottom - dp(58f), width - margin, primaryBottom)
+    }
+
     private fun drawButton(canvas: Canvas, rect: RectF, label: String, primary: Boolean) {
         paint.style = Paint.Style.FILL
         paint.color = if (primary) 0xFF0284C7.toInt() else 0xCC1E293B.toInt()
@@ -558,9 +582,13 @@ class GazeCalibrationView(context: Context) : View(context) {
             paint.style = Paint.Style.FILL
         }
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = if (rect.width() < width * 0.35f) 19f else 23f
+        paint.isFakeBoldText = true
+        paint.textSize = dp(if (rect.width() < width * 0.35f) 15f else 19f)
+        val scale = (rect.width() - dp(16f)) / paint.measureText(label)
+        if (scale in 0f..1f) paint.textSize *= scale
         paint.color = Color.WHITE
-        canvas.drawText(label, rect.centerX(), rect.centerY() + 8f, paint)
+        canvas.drawText(label, rect.centerX(), rect.centerY() - (paint.ascent() + paint.descent()) / 2f, paint)
+        paint.isFakeBoldText = false
     }
 
     private fun updateBodyRect() {

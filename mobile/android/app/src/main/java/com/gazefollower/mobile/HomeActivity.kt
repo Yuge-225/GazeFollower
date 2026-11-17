@@ -7,13 +7,15 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import com.gazefollower.mobile.experiment.Experiment
 import com.gazefollower.mobile.experiment.ExperimentStore
 
-class HomeActivity : ComponentActivity() {
+class HomeActivity : VersionUiActivity() {
     private lateinit var store: ExperimentStore
     private lateinit var summary: TextView
+    private lateinit var homeScreen: LinearLayout
+    private var choosingVersion = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -24,7 +26,7 @@ class HomeActivity : ComponentActivity() {
             setTextColor(getColor(R.color.secondary))
             gravity = Gravity.START
         }
-        val root = LinearLayout(this).apply {
+        homeScreen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(padding, padding, padding, padding)
@@ -47,7 +49,12 @@ class HomeActivity : ComponentActivity() {
             }, matchWrap(bottom = 24))
             addView(summary, matchWrap())
         }
-        setContentView(root)
+        setContentView(homeScreen)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (choosingVersion) showHome() else finish()
+            }
+        })
     }
 
     override fun onResume() {
@@ -59,28 +66,32 @@ class HomeActivity : ComponentActivity() {
         } else {
             "${versions.size} versions · ${published.size} ready to test"
         }
+        if (choosingVersion) showPublishedVersions()
+    }
+
+    private fun showHome() {
+        choosingVersion = false
+        setContentView(homeScreen)
     }
 
     private fun showPublishedVersions() {
         val published = store.list().filter { it.status == Experiment.STATUS_PUBLISHED && it.videos.isNotEmpty() }
-        if (published.isEmpty()) {
-            android.app.AlertDialog.Builder(this)
-                .setTitle("No version is ready")
-                .setMessage("Create and publish a version before starting a test.")
-                .setPositiveButton("Manage Versions") { _, _ ->
-                    startActivity(Intent(this, ExperimentVersionsActivity::class.java))
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-            return
-        }
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Choose a version")
-            .setItems(published.map { "Version ${it.version} · ${it.name}" }.toTypedArray()) { _, index ->
-                startActivity(Intent(this, VersionDetailActivity::class.java).putExtra(EXTRA_VERSION_ID, published[index].id))
+        choosingVersion = true
+        show(page("Choose a version", if (published.isEmpty())
+            "Create and publish a version before starting a test." else "Select a published experiment.").apply {
+            if (published.isEmpty()) {
+                addView(action("Manage Versions", primary = true) {
+                    startActivity(Intent(this@HomeActivity, ExperimentVersionsActivity::class.java))
+                }, row(12, 56))
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            published.forEach { experiment ->
+                addView(navCard(experiment.name, "Version ${experiment.version} · ${experiment.videos.size} videos") {
+                    startActivity(Intent(this@HomeActivity, VersionDetailActivity::class.java)
+                        .putExtra(EXTRA_VERSION_ID, experiment.id))
+                }, row(12))
+            }
+            addView(action("Back") { showHome() }, row(height = 52))
+        })
     }
 
     private fun taskCard(heading: String, description: String, onClick: () -> Unit) = LinearLayout(this).apply {
@@ -117,5 +128,4 @@ class HomeActivity : ComponentActivity() {
         }
     }
 
-    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 }

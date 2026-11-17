@@ -9,11 +9,11 @@ For user-facing operation instructions, see [Android App Workflow](../../docs/AN
 ```text
 Create Version → Import Videos → Annotate Multiple AOIs → Publish
        ↓
-Preview → 9-Point Calibration → 5-Point Validation
+Enter Participant Code → Preview → 9-Point Calibration → 5-Point Validation
        ↓
 Ready Mode or Scroll Mode
        ↓
-Attention Dashboard → Per-Video Replay → Test History
+Results → Review or Upload to Website
 ```
 
 ### Authoring
@@ -190,7 +190,7 @@ files/sessions/<session-id>/
 
 Experiment versions, imported videos, reusable labels, annotations, and results are stored in app-private storage. They survive USB disconnection and normal app restarts, but are removed if the app is uninstalled or its storage is cleared.
 
-A user-facing file share/export action is not currently implemented.
+Tap **Upload to Website** from the results screen or a saved test in **Test History**. Enter the dashboard URL and website password. The app checks for existing data before uploading. Researchers can replay videos and export Excel or JSON from the [web dashboard](../../web/README.md).
 
 ## Known Limitations
 

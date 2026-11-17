@@ -4,8 +4,11 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -53,12 +56,17 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         var distanceSum: Float = 0f,
         var presentedDurationMs: Long = 0L,
         var endedBySwipe: Boolean = false,
+        var playbackFailed: Boolean = false,
+        var geometry: JSONObject? = null,
         val attentionCounts: MutableMap<String, Int> = mutableMapOf(),
     )
 
     private val handler = Handler(Looper.getMainLooper())
     private val results = mutableListOf<TrialResult>()
     private val samples = mutableListOf<Sample>()
+    private var capturedSamples = JSONArray()
+    private var participantCode = ""
+    private var validation = JSONObject()
     private var experiment: Experiment? = null
     private var trialIndex = 0
     private var videoView: VideoView? = null
@@ -75,12 +83,15 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         visibility = GONE
     }
 
-    fun start(experiment: Experiment, mode: String = MODE_READY) {
+    fun start(experiment: Experiment, mode: String, participantCode: String, validation: JSONObject) {
         this.experiment = experiment
+        this.participantCode = participantCode
+        this.validation = validation
         presentationMode = if (mode == MODE_SCROLL) MODE_SCROLL else MODE_READY
         trialIndex = 0
         results.clear()
         samples.clear()
+        capturedSamples = JSONArray()
         sessionId = UUID.randomUUID().toString()
         startedAtMs = System.currentTimeMillis()
         visibility = VISIBLE
@@ -96,12 +107,32 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             val result = results.lastOrNull() ?: return@post
             result.capturedGazeSamples += 1
             val position = player.currentPosition.toLong()
-            if (position < SCORING_DELAY_MS) return@post
-            val activeAois = video.activeAoisAt(position)
-            if (activeAois.isEmpty()) return@post
             val bounds = videoContentBounds(video)
             val gazeX = normalizedX * width
             val gazeY = normalizedY * height
+            if (result.geometry == null) result.geometry = captureGeometry(bounds)
+            val captured = JSONObject().apply {
+                put("videoId", video.id)
+                put("trialIndex", results.size)
+                put("videoTimeMs", position)
+                if (gazeX.isFinite() && gazeY.isFinite()) {
+                    put("gazeXPx", gazeX.toDouble())
+                    put("gazeYPx", gazeY.toDouble())
+                    put("gazeXVideo", ((gazeX - bounds.left) / bounds.width()).toDouble().takeIf { it.isFinite() })
+                    put("gazeYVideo", ((gazeY - bounds.top) / bounds.height()).toDouble().takeIf { it.isFinite() })
+                }
+                put("scored", false)
+            }
+            capturedSamples.put(captured)
+            if (position < SCORING_DELAY_MS) {
+                captured.put("excludedReason", "START_DELAY")
+                return@post
+            }
+            val activeAois = video.activeAoisAt(position)
+            if (activeAois.isEmpty()) {
+                captured.put("excludedReason", "NO_VISIBLE_AOI")
+                return@post
+            }
             val videoX = ((gazeX - bounds.left) / bounds.width()).coerceIn(0f, 1f)
             val videoY = ((gazeY - bounds.top) / bounds.height()).coerceIn(0f, 1f)
             val strictRegions = activeAois.map { (target, roi) -> target to mapRoi(roi, bounds) }
@@ -137,6 +168,12 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             result.distanceSum += distance
             result.attentionCounts[assignedLabelId] = (result.attentionCounts[assignedLabelId] ?: 0) + 1
             samples += Sample(video.id, position, gazeX, gazeY, videoX, videoY, strictHit, tolerantHit, distance, matchedAois, assignedLabelId)
+            captured.put("scored", true)
+            captured.put("strictHit", strictHit)
+            captured.put("tolerantHit", tolerantHit)
+            captured.put("distancePx", distance.toDouble().takeIf { it.isFinite() })
+            captured.put("assignedLabelId", assignedLabelId)
+            captured.put("assignedLabel", matchedAois)
         }
     }
 
@@ -177,19 +214,25 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
 
     private fun playVideo(video: ExperimentVideo) {
         removeAllViews()
+        val result = TrialResult(video)
+        results += result
         val player = VideoView(context).apply {
             setVideoPath(video.localPath)
             setOnPreparedListener { mediaPlayer ->
+                if (videoView !== this) return@setOnPreparedListener
                 mediaPlayer.isLooping = false
-                results += TrialResult(video)
+                result.geometry = captureGeometry(videoContentBounds(video))
                 collecting = true
                 start()
             }
             setOnCompletionListener {
-                finishCurrentVideo(swiped = false)
+                if (videoView === this && collecting) finishCurrentVideo(swiped = false)
             }
             setOnErrorListener { _, _, _ ->
-                finishCurrentVideo(swiped = false)
+                if (videoView === this && !result.endedBySwipe) {
+                    result.playbackFailed = true
+                    finishCurrentVideo(swiped = false, cutoffMs = currentPosition.toLong().coerceAtLeast(0L))
+                }
                 true
             }
         }
@@ -217,10 +260,13 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    if (!collecting) return@setOnTouchListener true
                     val delta = event.rawY - downY
                     if (delta < -dp(72)) {
                         collecting = false
+                        results.lastOrNull()?.endedBySwipe = true
                         val cutoffAtSwipe = videoView?.currentPosition?.toLong()?.coerceAtLeast(0L)
+                        videoView?.pause()
                         view.animate().translationY(-height.toFloat()).alpha(0f).setDuration(180L)
                             .withEndAction { finishCurrentVideo(swiped = true, cutoffMs = cutoffAtSwipe) }.start()
                     } else {
@@ -241,7 +287,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val player = videoView
         val result = results.lastOrNull()
         collecting = false
-        result?.presentedDurationMs = if (swiped) {
+        result?.presentedDurationMs = if (swiped || result?.playbackFailed == true) {
             cutoffMs ?: player?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L
         } else {
             result?.video?.durationMs ?: 0L
@@ -297,6 +343,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             results.forEachIndexed { index, result ->
                 addView(resultCard(index, result), params(9))
             }
+            addView(SessionUpload.button(context, sessionId), params(8, 48))
             addView(button("Return to Home") { onExit?.invoke() }, params(8, 46))
         }
         addView(ScrollView(context).apply { addView(content) }, LayoutParams(-1, -1))
@@ -525,11 +572,35 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         detailVideoView = null
     }
 
+    @Suppress("DEPRECATION")
+    private fun captureGeometry(bounds: RectF): JSONObject? {
+        if (width <= 0 || height <= 0 || bounds.width() <= 0 || bounds.height() <= 0) return null
+        val display = DisplayMetrics()
+        (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(display)
+        return JSONObject().apply {
+            put("manufacturer", Build.MANUFACTURER)
+            put("model", Build.MODEL)
+            put("androidApi", Build.VERSION.SDK_INT)
+            put("displayWidthPx", display.widthPixels)
+            put("displayHeightPx", display.heightPixels)
+            put("viewportWidthPx", width)
+            put("viewportHeightPx", height)
+            put("videoRectPx", JSONObject().apply {
+                put("left", bounds.left.toDouble())
+                put("top", bounds.top.toDouble())
+                put("right", bounds.right.toDouble())
+                put("bottom", bounds.bottom.toDouble())
+            })
+        }
+    }
+
     private fun saveSession() {
         val exp = experiment ?: return
         val directory = File(context.filesDir, "sessions/$sessionId").apply { mkdirs() }
         val summary = JSONObject().apply {
             put("sessionId", sessionId)
+            put("participantCode", participantCode)
+            put("validation", validation)
             put("experimentId", exp.id)
             put("experimentName", exp.name)
             put("experimentVersion", exp.version)
@@ -538,15 +609,19 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             put("completedAtMs", System.currentTimeMillis())
             put("experimentSnapshot", ExperimentStore(context).snapshot(exp))
             put("trials", JSONArray().apply {
-                results.forEach { result ->
+                results.forEachIndexed { index, result ->
                     put(JSONObject().apply {
+                        put("trialIndex", index + 1)
+                        put("trialId", "$sessionId-${index + 1}")
+                        put("geometry", result.geometry)
                         put("videoId", result.video.id)
                         put("videoName", result.video.displayName)
                         put("targets", JSONArray(result.video.allTargets().map { it.name }))
                         put("sourceVideoFrames", result.video.sourceFrameCount)
                         put("videoDurationMs", result.video.durationMs)
-                        put("presentedDurationMs", result.presentedDurationMs.takeIf { it > 0L } ?: result.video.durationMs)
+                        put("presentedDurationMs", result.presentedDurationMs)
                         put("endedBySwipe", result.endedBySwipe)
+                        put("playbackFailed", result.playbackFailed)
                         put("capturedGazeSamples", result.capturedGazeSamples)
                         put("validSamples", result.validSamples)
                         put("excludedGazeSamples", (result.capturedGazeSamples - result.validSamples).coerceAtLeast(0))
@@ -572,13 +647,14 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 }
             })
         }
-        File(directory, "session_summary.json").writeText(summary.toString(2))
+        File(directory, "captured_samples.json").writeText(capturedSamples.toString())
         File(directory, "gaze_samples.csv").bufferedWriter().use { writer ->
             writer.appendLine("video_id,video_time_ms,gaze_x_px,gaze_y_px,video_x_normalized,video_y_normalized,strict_hit,tolerant_hit,distance_px,matched_aois,assigned_label_id")
             samples.forEach { sample ->
                 writer.appendLine("${sample.videoId},${sample.positionMs},${sample.x},${sample.y},${sample.videoX},${sample.videoY},${sample.strictHit},${sample.tolerantHit},${sample.distancePx},\"${sample.matchedAois}\",${sample.assignedLabelId}")
             }
         }
+        File(directory, "session_summary.json").writeText(summary.toString(2))
     }
 
     private fun videoContentBounds(video: ExperimentVideo): RectF {

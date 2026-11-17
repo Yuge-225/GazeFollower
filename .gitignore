@@ -35,3 +35,4 @@ js_port.zip
 results/
 .cache/
 .DS_Store
+/web/.data/

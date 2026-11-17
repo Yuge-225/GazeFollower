@@ -15,6 +15,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import com.gazefollower.mobile.experiment.Experiment
 import com.gazefollower.mobile.experiment.ExperimentStore
 import org.json.JSONObject
@@ -146,20 +147,36 @@ class ExperimentVersionsActivity : VersionUiActivity() {
 class VersionDetailActivity : VersionUiActivity() {
     private lateinit var store: ExperimentStore
     private lateinit var experiment: Experiment
+    private var settingUpTest = false
+    private var lastParticipantCode = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = ExperimentStore(this)
+        lastParticipantCode = savedInstanceState?.getString(EXTRA_PARTICIPANT_CODE).orEmpty()
+        settingUpTest = savedInstanceState?.getBoolean("setting_up_test") ?: false
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (settingUpTest) render() else finish()
+            }
+        })
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean("setting_up_test", settingUpTest)
+        outState.putString(EXTRA_PARTICIPANT_CODE, lastParticipantCode)
     }
 
     override fun onResume() {
         super.onResume()
         val id = intent.getStringExtra(EXTRA_VERSION_ID)
         experiment = store.load(id)
-        render()
+        if (settingUpTest) chooseMode() else render()
     }
 
     private fun render() {
+        settingUpTest = false
         val runs = store.runCount(experiment.id)
         val boxes = experiment.videos.sumOf { 1 + it.additionalAois.size }
         val content = page(
@@ -197,26 +214,60 @@ class VersionDetailActivity : VersionUiActivity() {
 
     private fun chooseMode() {
         if (experiment.status != Experiment.STATUS_PUBLISHED || experiment.videos.isEmpty()) {
-            AlertDialog.Builder(this)
-                .setTitle("Version not ready")
-                .setMessage("Finish the video annotations and publish this version before starting a test.")
-                .setPositiveButton("Edit Setup") { _, _ -> requestEdit() }
-                .setNegativeButton("Cancel", null)
-                .show()
+            settingUpTest = true
+            show(page("Version not ready", "Finish the video annotations and publish this version before starting a test.").apply {
+                addView(action("Edit Setup", primary = true) { requestEdit() }, row(12, 56))
+                addView(action("Back") { render() }, row(height = 48))
+            })
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("Free-viewing presentation mode")
-            .setItems(arrayOf(
-                "Ready Mode\nWatch naturally; press Ready before every video",
-                "Scroll Mode\nWatch naturally; swipe up for the next video",
-            )) { _, index ->
-                startActivity(Intent(this, MainActivity::class.java)
-                    .putExtra(EXTRA_VERSION_ID, experiment.id)
-                    .putExtra(EXTRA_PRESENTATION_MODE, if (index == 0) MODE_READY else MODE_SCROLL))
+        settingUpTest = true
+        val input = EditText(this).apply {
+            hint = "e.g. P014"
+            setText(lastParticipantCode)
+            setTextColor(android.graphics.Color.WHITE)
+            setHintTextColor(getColor(R.color.secondary))
+            textSize = 18f
+            setSingleLine()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(getColor(R.color.card_background))
+                setStroke(dp(1), getColor(R.color.card_border))
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            setOnFocusChangeListener { _, _ -> lastParticipantCode = text.toString() }
+        }
+        fun start(mode: String) {
+            lastParticipantCode = input.text.toString()
+            val code = lastParticipantCode.trim()
+            if (!PARTICIPANT_CODE.matches(code)) {
+                input.requestFocus()
+                input.error = "Enter 1–32 letters, numbers, hyphens or underscores."
+                return
+            }
+            startActivity(Intent(this, MainActivity::class.java)
+                .putExtra(EXTRA_VERSION_ID, experiment.id)
+                .putExtra(EXTRA_PARTICIPANT_CODE, code)
+                .putExtra(EXTRA_PRESENTATION_MODE, mode))
+        }
+        show(page("Start a new test", experiment.name).apply {
+            isFocusableInTouchMode = true
+            addView(title("Participant code", 17f), row(6))
+            addView(input, row(8))
+            addView(body("Use the same code for each visit."), row(24))
+            addView(title("How will videos advance?", 20f), row(12))
+            listOf(
+                Triple("Ready Mode", "Tap Ready before each video.", MODE_READY),
+                Triple("Scroll Mode", "Swipe up to move to the next video.", MODE_SCROLL),
+            ).forEach { (label, description, mode) ->
+                addView(card().apply {
+                    addView(action(label, primary = true) { start(mode) }.apply { textSize = 20f }, row(5, 60))
+                    addView(body(description).apply { gravity = Gravity.CENTER }, row(4))
+                }, row(14))
+            }
+            addView(action("Back") { render() }, row(height = 52))
+            requestFocus()
+        })
     }
 }
 
@@ -364,6 +415,7 @@ class RunResultActivity : VersionUiActivity() {
                 }
             }, row(9))
         }
+        content.addView(com.gazefollower.mobile.experiment.SessionUpload.button(this, sessionId), row(8, 48))
         content.addView(action("Back") { finish() }, row(height = 46))
         show(content)
     }
@@ -458,6 +510,8 @@ abstract class VersionUiActivity : ComponentActivity() {
 const val EXTRA_VERSION_ID = "experiment_version_id"
 const val EXTRA_PRESENTATION_MODE = "presentation_mode"
 const val EXTRA_SESSION_ID = "session_id"
+const val EXTRA_PARTICIPANT_CODE = "participant_code"
+internal val PARTICIPANT_CODE = Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 const val EXTRA_VIDEO_ID = "video_id"
 const val EXTRA_TRIAL_INDEX = "trial_index"
 const val MODE_READY = "READY"

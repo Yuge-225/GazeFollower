@@ -2,7 +2,7 @@
 
 This repository extends the [original GazeFollower project](https://github.com/GanchengZhu/GazeFollower) with structured desktop experiments and an Android app for on-device, free-viewing gaze studies.
 
-The Android app currently supports experiment authoring, multi-AOI video annotation, participant calibration and validation, Ready/Scroll video presentation, gaze replay, attention summaries, and session-level CSV/JSON results.
+Use the Android app to author and run free-viewing experiments. The web dashboard lets researchers replay uploaded tests and export data from a computer.
 
 > GazeFollower is a research prototype. It is not a clinical system or a replacement for a dedicated infrared eye tracker.
 
@@ -12,6 +12,7 @@ The Android app currently supports experiment authoring, multi-AOI video annotat
 - [Android Workflow](#android-workflow)
 - [Model and Calibration](#model-and-calibration)
 - [Android Quick Start](#android-quick-start)
+- [Web Dashboard](#web-dashboard)
 - [Desktop App](#desktop-app)
 - [Data Outputs](#data-outputs)
 - [Project Structure](#project-structure)
@@ -38,6 +39,7 @@ The Android app currently supports experiment authoring, multi-AOI video annotat
 - Real-time `base.mnn` gaze inference through MNN and JNI.
 - Animated nine-point personal calibration.
 - Five-point validation with a visual accuracy summary.
+- A participant code links repeat visits in the dashboard.
 - Free-viewing stimulus presentation in Ready Mode or Scroll Mode.
 - Hidden camera preview, gaze marker, and AOI truth during video testing.
 
@@ -58,13 +60,13 @@ Manage Versions
     ↓
 Create Version → Add Videos → Annotate AOIs → Publish
     ↓
-Start a Test
+Start a Test → Enter Participant Code → Choose Ready or Scroll
     ↓
 Preview → 9-Point Calibration → 5-Point Validation
     ↓
-Ready Mode or Scroll Mode
+Watch Videos
     ↓
-Result Dashboard → Per-Video Replay → Test History
+Results → Review or Upload to Website
 ```
 
 The experiment is **free viewing**: participants watch the videos naturally and are not instructed to look at a particular body region. AOI annotations are hidden during testing and used only for later analysis.
@@ -129,6 +131,27 @@ The installed app can be opened directly from the phone without reconnecting it 
 
 More build and implementation details are available in [mobile/android/README.md](mobile/android/README.md).
 
+## Web Dashboard
+
+From the repository root, start the dashboard with Python 3:
+
+```bash
+printf 'Website password: '
+read -rs GAZEFOLLOWER_WEB_PASSWORD
+export GAZEFOLLOWER_WEB_PASSWORD
+printf '\n'
+python3 web/server.py
+```
+
+1. Open [the local dashboard](http://127.0.0.1:8765/) and sign in.
+2. For local Android testing, connect the phone and run `adb reverse tcp:8765 tcp:8765`.
+3. In a completed test or **Test History**, tap **Upload to Website**. Enter `http://127.0.0.1:8765` and the website password. Upload starts only when you tap **Upload**. The app checks which tests and videos are already on the server before sending data.
+4. Open a participant in the dashboard. Replay an individual video with its heatmap, select specific videos for export, or download all tests for that participant. Use **Edit test** to name a test and add notes. Deleted tests can be restored.
+
+If the page shows an older server message after a code update, stop the running server with **Ctrl+C**, run `python3 web/server.py` again, and refresh the page.
+
+For export details and private HTTPS setup, see the [dashboard guide](web/README.md).
+
 ## Desktop App
 
 The desktop workflow remains available for camera preview, personal calibration, validation, and the human-body Live Test.
@@ -168,7 +191,7 @@ files/sessions/<session-id>/
 - `session_summary.json` stores the experiment snapshot, presentation mode, per-video sample counts, AOI metrics, attention distribution, and Scroll Mode cutoffs.
 - `gaze_samples.csv` stores the valid scored gaze samples with video timestamps, screen/video coordinates, AOI hits, labels, and distance values.
 
-The files are generated and used by the app. A user-facing share/export action is not currently provided.
+The dashboard exports Excel (`.xlsx`) and JSON for a test, a participant, or selected videos. Exports include available per-video metrics, gaze samples, validation results, and exact and tolerant AOI coordinates. Device and viewport metadata, normalized coordinates, and relative distance help compare recordings across phone sizes. Older tests may have fewer fields.
 
 ### Desktop experiments
 
@@ -193,10 +216,18 @@ GazeFollower/
 ├── docs/
 │   ├── ANDROID_APP_WORKFLOW.md    # Android user workflow
 │   └── images/                    # Documentation-only synthetic graphics
+├── web/                           # Research dashboard and export server
 └── tests/                         # Desktop tests
 ```
 
 ## Testing
+
+### Web dashboard
+
+```bash
+python3 -m unittest discover -s web -p 'test_*.py'
+node --check web/public/app.js
+```
 
 ### Android unit tests and APK
 
@@ -224,6 +255,7 @@ pytest tests
 
 - Camera frames are processed locally by the current Android prototype.
 - Imported videos, annotations, and test results are stored in app-private storage.
+- Manual upload transfers stimulus videos and test data to the dashboard. The server stores them in `web/.data/` by default, which Git ignores.
 - Documentation must not contain participant faces or identifiable test-session screenshots.
 - The synthetic workflow graphic contains no participant image or recorded gaze data.
 - Researchers are responsible for consent, retention, access control, and institutional requirements.

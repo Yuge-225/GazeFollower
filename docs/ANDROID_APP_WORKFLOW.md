@@ -89,7 +89,7 @@ Open:
 Start a Test → Select Version → Start a New Test
 ```
 
-Choose one of the two presentation modes:
+Enter a **Participant code** before choosing a mode. Use the same code for repeat visits to group that participant's tests in the dashboard.
 
 | Mode | Operation |
 | --- | --- |
@@ -184,6 +184,12 @@ Manage Versions → Select Version → Test History
 ```
 
 Select a test to view its overall result. Select a video to view its replay and detailed metrics.
+
+## 5. Upload and Export
+
+From a completed test or **Test History**, tap **Upload to Website** and enter the website address and password. The app checks for existing data and uploads only what is missing when you tap **Upload**.
+
+On the computer, sign in to the dashboard and open a participant. Open a test to replay its videos, or select videos for an Excel or JSON export. See the [dashboard setup guide](../web/README.md).
 
 ## Quick Checklist
 
