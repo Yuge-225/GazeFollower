@@ -166,6 +166,23 @@ class DashboardIntegrationTest(unittest.TestCase):
             self.assertEqual(SESSION + "-1", rows[1]["trialId"])
             self.assertEqual("P014", rows[1]["participantCode"])
 
+    def test_multi_round_replay_fields_reach_the_dashboard(self):
+        body = fixture()
+        body["summary"]["playbackMode"] = "MANUAL_SCROLL"
+        body["summary"]["trials"][0].update(
+            completedLoops=2, finalVideoTimeMs=1600, presentedDurationMs=7600)
+        body["samples"][1].update(playbackPass=3, trialTimeMs=6750)
+        self.assertEqual(201, self.request("/api/assets/" + HASH, "PUT", VIDEO)[0])
+        self.assertEqual(201, self.request("/api/sessions", "POST", body)[0])
+        listing = json.loads(self.request("/api/sessions")[2])
+        self.assertEqual("MANUAL_SCROLL", listing[0]["playbackMode"])
+        bundle = json.loads(self.request("/api/sessions/" + SESSION)[2])
+        self.assertEqual(2, bundle["summary"]["trials"][0]["completedLoops"])
+        self.assertEqual(3, bundle["samples"][1]["playbackPass"])
+        status, headers, _ = self.request("/replay.mjs")
+        self.assertEqual(200, status)
+        self.assertEqual("text/javascript", headers.get_content_type())
+
     def test_historical_csv_labels_coverage_and_leaves_unknown_geometry_blank(self):
         body = fixture()
         del body["samples"]

@@ -38,6 +38,14 @@ to Website**. Older tests without a participant code ask for one. Tap again to
 verify the **Already Uploaded** result. Use the Sessions page to open the
 test, download Excel or JSON, and replay an individual trial.
 
+- **Manual scroll:** The replay timeline appends each round in order, shows the
+  round number and time, and stops at the recorded swipe. The gaze overlays
+  use only the current round's samples.
+- **Autoplay:** Each video plays once and the next starts automatically during
+  the test. In **Ready** mode the participant starts each video by tapping Ready.
+- **Scroll (legacy):** Older records have no loops. Replay marks the unrecorded
+  part after a swipe.
+
 For Wi-Fi use, run the dashboard behind a private HTTPS reverse proxy that
 forwards to loopback and sets `X-Forwarded-Proto: https`. Enter the HTTPS site
 URL when pairing the phone. Forward upload bodies and Range requests.

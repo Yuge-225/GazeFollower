@@ -7,9 +7,13 @@ import android.net.ConnectivityManager
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.view.View
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.Toast
 import com.gazefollower.mobile.PARTICIPANT_CODE
 import com.gazefollower.mobile.R
@@ -30,12 +34,22 @@ object SessionUpload {
     private class AuthorizationRejected : IOException()
     private val uploading = mutableSetOf<String>()
 
-    fun button(context: Context, sessionId: String) = Button(context).apply {
-        text = "Upload to Website"
-        isAllCaps = false
-        setTextColor(context.getColor(R.color.button_text))
-        backgroundTintList = ColorStateList.valueOf(context.getColor(R.color.button_background))
-        setOnClickListener { configure(this, sessionId) }
+    fun button(context: Context, sessionId: String) = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        val indicator = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        addView(Button(context).apply {
+            text = "Upload to Website"
+            isAllCaps = false
+            setTextColor(context.getColor(R.color.button_text))
+            backgroundTintList = ColorStateList.valueOf(context.getColor(R.color.button_background))
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            setOnClickListener { configure(this, indicator, sessionId) }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        addView(indicator, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
     }
 
     fun settings(context: Context) {
@@ -54,7 +68,7 @@ object SessionUpload {
         dialog.show()
     }
 
-    private fun configure(button: Button, sessionId: String) {
+    private fun configure(button: Button, indicator: ProgressBar, sessionId: String) {
         if (sessionId in uploading) return
         val context = button.context
         val directory = ExperimentStore(context).sessionDirectory(sessionId)
@@ -68,7 +82,7 @@ object SessionUpload {
         fun uploadTest(authorization: UploadAuthorization) {
             val existingCode = summary.optString("participantCode")
             if (PARTICIPANT_CODE.matches(existingCode)) {
-                startUpload(button, sessionId, authorization, directory, summary)
+                startUpload(button, indicator, sessionId, authorization, directory, summary)
                 return
             }
             val participant = input(context, "Participant code")
@@ -84,7 +98,7 @@ object SessionUpload {
                 }
                 dialog.dismiss()
                 summary.put("participantCode", code)
-                startUpload(button, sessionId, authorization, directory, summary)
+                startUpload(button, indicator, sessionId, authorization, directory, summary)
             }
         }
 
@@ -142,6 +156,7 @@ object SessionUpload {
 
     private fun startUpload(
         button: Button,
+        indicator: ProgressBar,
         sessionId: String,
         authorization: UploadAuthorization,
         directory: File,
@@ -150,11 +165,22 @@ object SessionUpload {
         val context = button.context
         if (!hasConnection(context, authorization.address) || !uploading.add(sessionId)) return
         button.isEnabled = false
-        button.text = "Uploading…"
+        button.text = "Waiting to upload…"
+        indicator.isIndeterminate = true
+        indicator.visibility = View.VISIBLE
         executor.execute {
-            val result = runCatching { upload(authorization, directory, summary) }
+            val result = runCatching {
+                upload(authorization, directory, summary) { stage, percent ->
+                    mainThread.post {
+                        button.text = if (percent == null) stage else "$stage · $percent%"
+                        indicator.isIndeterminate = percent == null
+                        if (percent != null) indicator.progress = percent
+                    }
+                }
+            }
             mainThread.post {
                 uploading.remove(sessionId)
+                indicator.visibility = View.GONE
                 button.isEnabled = true
                 val error = result.exceptionOrNull()
                 if (error is AuthorizationRejected) {
@@ -205,7 +231,12 @@ object SessionUpload {
         return UploadAuthorization(uri, token)
     }
 
-    internal fun upload(authorization: UploadAuthorization, directory: File, summary: JSONObject): String {
+    internal fun upload(
+        authorization: UploadAuthorization,
+        directory: File,
+        summary: JSONObject,
+        progress: (stage: String, percent: Int?) -> Unit = { _, _ -> },
+    ): String {
         val id = summary.getString("sessionId")
         val uri = authorization.address
         val credential = "Bearer ${authorization.token}"
@@ -213,8 +244,10 @@ object SessionUpload {
             put("sessionId", id)
             put("assetHashes", JSONArray(hashes))
         })
+        progress("Connecting to website…", null)
         if (preflight(emptyList()).getBoolean("sessionExists")) return "Already Uploaded"
 
+        progress("Preparing videos…", null)
         val snapshot = summary.optJSONObject("experimentSnapshot")
             ?: throw IOException("This test has no saved video annotations.")
         val trials = summary.getJSONArray("trials")
@@ -234,16 +267,42 @@ object SessionUpload {
             trialVideos.put(video)
         }
         snapshot.put("videos", trialVideos)
+        progress("Checking for existing videos…", null)
         val check = preflight(files.keys)
         if (check.getBoolean("sessionExists")) return "Already Uploaded"
         val missing = check.getJSONArray("missingAssets")
-        for (index in 0 until missing.length()) {
+        val pending = (0 until missing.length()).map { index ->
             val hash = missing.getString(index)
             val file = files.getValue(hash)
-            exchange(uri, "/api/assets/$hash", credential, "PUT", "application/octet-stream", file.length()) { output ->
-                file.inputStream().use { it.copyTo(output) }
+            val length = file.length()
+            if (length <= 0) throw IOException("A video could not be read. Try uploading again.")
+            Triple(hash, file, length)
+        }
+        val totalBytes = pending.sumOf { it.third }
+        var sentBytes = 0L
+        val buffer = ByteArray(64 * 1024)
+        for ((index, item) in pending.withIndex()) {
+            val (hash, file, length) = item
+            val stage = "Uploading video ${index + 1} of ${pending.size}"
+            var lastPercent = (100 * sentBytes / totalBytes).toInt()
+            progress(stage, lastPercent)
+            exchange(uri, "/api/assets/$hash", credential, "PUT", "application/octet-stream", length) { output ->
+                file.inputStream().use { input ->
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        sentBytes += count
+                        val percent = (100 * sentBytes / totalBytes).toInt()
+                        if (percent != lastPercent) {
+                            lastPercent = percent
+                            progress(stage, percent)
+                        }
+                    }
+                }
             }
         }
+        progress("Saving test results…", null)
         val captured = directory.resolve("captured_samples.json")
         val answer = request(uri, "/api/sessions", credential, JSONObject().apply {
             put("summary", summary)

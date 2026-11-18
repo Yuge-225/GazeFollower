@@ -1,3 +1,5 @@
+import {modeOf, playbackModes, replayClock, replaySamples, replayTimeline} from "./replay.mjs";
+
 const main = document.querySelector("#main");
 const number = new Intl.NumberFormat();
 const formatNumber = value => value == null ? "Unavailable" : number.format(value);
@@ -46,7 +48,8 @@ function downloadLinks(base, allTests = false) {
 function sessionTitle(session) {
   return session.research?.name || session.participantCode + " / V" + session.experimentVersion + " / " + session.sessionId.slice(0, 8);
 }
-const modeName = mode => mode === "SCROLL" ? "Scroll" : "Ready";
+const modeName = summary => playbackModes[modeOf(summary)]?.name ?? "Unknown";
+const modeHint = summary => playbackModes[modeOf(summary)]?.hint ?? "";
 const participantUrl = code => "#participant/" + encodeURIComponent(code);
 
 function sessionRow(session, allSessions) {
@@ -57,7 +60,7 @@ function sessionRow(session, allSessions) {
   while (peerIds.some(peer => peer.startsWith(id.slice(0, length)))) length += 1;
   return [el("a", {href: "#session/" + session.sessionId, title: session.sessionId}, id.slice(0, length)),
     "V" + session.experimentVersion + " · " + session.experimentName,
-    modeName(session.presentationMode), new Date(session.completedAtMs).toLocaleString(),
+    modeName(session), new Date(session.completedAtMs).toLocaleString(),
     session.trialCount, session.validSamples];
 }
 
@@ -188,7 +191,7 @@ function participantDetail(data, code, selections = new Set()) {
       el("div", {class: "test-card-header"},
         el("div", {class: "test-card-name"}, toggle, display),
         el("div", {class: "test-card-tools"}, editor, remove)),
-      el("div", {class: "muted"}, "V" + test.experimentVersion + " · " + modeName(test.presentationMode)
+      el("div", {class: "muted"}, "V" + test.experimentVersion + " · " + modeName(test)
         + " · " + new Date(test.completedAtMs).toLocaleString()),
       note, expand, updateStatus);
     return card;
@@ -248,8 +251,8 @@ function pairingPanel() {
 function sessions(data) {
   const participant = el("input", {type: "search", placeholder: "e.g. P014"});
   const version = el("select", {}, el("option", {value: ""}, "All versions"));
-  const mode = el("select", {}, el("option", {value: ""}, "Both modes"),
-    el("option", {value: "READY"}, "Ready"), el("option", {value: "SCROLL"}, "Scroll"));
+  const mode = el("select", {}, el("option", {value: ""}, "All modes"),
+    ...Object.entries(playbackModes).map(([value, info]) => el("option", {value}, info.name)));
   const date = el("input", {type: "date"});
   const showDeleted = el("input", {type: "checkbox"});
   const output = el("section", {"aria-live": "polite"});
@@ -260,7 +263,7 @@ function sessions(data) {
     const rows = data.filter(s => (!s.research?.deleted || showDeleted.checked)
         && s.participantCode.toLowerCase().includes(participant.value.trim().toLowerCase())
         && (!version.value || version.value === s.experimentId + "/" + s.experimentVersion)
-        && (!mode.value || mode.value === s.presentationMode)
+        && (!mode.value || mode.value === modeOf(s))
         && (!date.value || new Date(s.completedAtMs).toLocaleDateString("sv-SE") === date.value))
       .map(s => [el("a", {href: participantUrl(s.participantCode)}, s.participantCode),
         ...(s.research?.deleted ? ["Deleted", ...sessionRow(s, data).slice(1)] : sessionRow(s, data))]);
@@ -303,8 +306,9 @@ function testDetail(bundle) {
   ]);
   main.replaceChildren(el("a", {href: participantUrl(summary.participantCode), class: "back"}, "← " + summary.participantCode + " tests"),
     el("div", {class: "page-heading"}, el("div", {}, el("h1", {}, sessionTitle(summary)),
-      el("div", {class: "muted"}, summary.experimentName + " · " + modeName(summary.presentationMode) +
+      el("div", {class: "muted"}, summary.experimentName + " · " + modeName(summary) +
         " · " + new Date(summary.completedAtMs).toLocaleString())), downloadLinks("/api/sessions/" + summary.sessionId)),
+    el("p", {class: "muted"}, modeHint(summary)),
     ...(summary.research?.notes ? [el("p", {class: "test-note"}, summary.research.notes)] : []),
     ...(bundle.sampleCoverage === "scored_only" ? [el("p", {class: "muted"},
       "This older session contains scored gaze rows and a count of excluded samples.")] : []),
@@ -320,18 +324,22 @@ function trialDetail(bundle, trial) {
   const canvas = el("canvas", {"aria-hidden": "true"});
   const notice = el("div", {class: "cutoff", hidden: ""}, "Gaze data unavailable after swipe");
   const stage = el("div", {class: "replay-stage"}, video, canvas, notice);
-  const seek = el("input", {type: "range", min: "0", max: trial.videoDurationMs, value: "0", "aria-label": "Replay time"});
+  const replay = replayTimeline(trial, modeOf(summary));
+  const seek = el("input", {type: "range", min: "0", max: replay.duration, value: "0", "aria-label": "Replay time"});
   const timeline = el("div", {class: "timeline"}, seek);
-  if (trial.endedBySwipe && trial.videoDurationMs > 0) {
-    const marker = el("span", {class: "swipe-marker", title: "Swiped at " + seconds(trial.presentedDurationMs)});
-    marker.style.left = Math.min(100, 100 * trial.presentedDurationMs / trial.videoDurationMs) + "%";
+  if (replay.cutoff !== null && replay.duration > 0) {
+    const marker = el("span", {class: "swipe-marker", title: "Swiped at " + seconds(replay.cutoff)});
+    marker.style.left = 100 * replay.cutoff / replay.duration + "%";
     timeline.append(marker);
   }
-  const time = el("span", {});
-  const play = el("button", {onclick: () => {
-    if (video.paused) video.play().catch(() => { time.textContent = "Video playback unavailable"; });
-    else video.pause();
-  }}, "Play");
+  const time = el("p", {class: "replay-time"});
+  const play = el("button", {}, "Play");
+  let position = replay.positionAt(0);
+  let pending = null;
+  let closed = false;
+  let playing = false;
+  let frame;
+  play.disabled = seek.disabled = replay.duration === 0;
   const controls = el("div", {class: "toggles"});
   const layers = {};
   for (const [key, label, selected] of [["heat", "Heatmap", true], ["point", "Gaze point", true],
@@ -344,8 +352,7 @@ function trialDetail(bundle, trial) {
   }
   const geometry = trial.geometry;
   const viewport = geometry?.videoRectPx ? geometry : null;
-  const samples = bundle.samples.filter(sample => sample.trialId === trial.trialId && sample.scored)
-    .sort((a, b) => a.videoTimeMs - b.videoTimeMs);
+  const samples = replaySamples(bundle.samples, trial.trialId);
   const boxes = bundle.boxes.filter(box => box.trialId === trial.trialId && box.visible);
   const results = [
     ["Source frames", trial.sourceVideoFrames > 0 ? formatNumber(trial.sourceVideoFrames) : "Unavailable"],
@@ -361,10 +368,12 @@ function trialDetail(bundle, trial) {
   ];
   main.replaceChildren(el("a", {class: "back", href: "#session/" + summary.sessionId}, "← " + sessionTitle(summary)),
     el("h1", {}, trial.videoName),
-    el("p", {class: "muted"}, modeName(summary.presentationMode) + " · " +
+    el("p", {class: "muted"}, modeName(summary) + " · " +
       (trial.endedBySwipe ? "Swiped at " + seconds(trial.presentedDurationMs) : seconds(trial.presentedDurationMs) + " viewed")),
+    el("p", {class: "muted"}, modeHint(summary)),
+    ...(replay.manual ? [el("p", {class: "muted"}, "Gaze overlays show only the current round. Replay ends where the participant swiped.")] : []),
     el("div", {class: "replay"}, el("div", {class: "panel"}, stage,
-      el("div", {class: "playback"}, play, timeline, time), controls),
+      el("div", {class: "playback"}, play, timeline), time, controls),
       el("div", {}, metrics("Trial results", results))));
 
   const ctx = canvas.getContext("2d");
@@ -391,12 +400,16 @@ function trialDetail(bundle, trial) {
     const x0 = left + rect.left * scale;
     const y0 = top + rect.top * scale;
     Object.assign(video.style, {left: x0 + "px", top: y0 + "px", width: vw + "px", height: vh + "px"});
-    const ms = Math.round(video.currentTime * 1000);
-    seek.value = ms;
-    time.textContent = seconds(ms) + " / " + seconds(trial.videoDurationMs);
-    const afterSwipe = trial.endedBySwipe && ms > trial.presentedDurationMs;
-    notice.hidden = !afterSwipe;
-    if (afterSwipe) return;
+    const ms = position.local;
+    seek.value = position.elapsed;
+    const total = replayClock(position.elapsed) + " / " + replayClock(replay.duration);
+    time.textContent = replay.manual
+      ? "Round " + position.pass + " of " + replay.passCount + " · " + replayClock(ms) +
+        " / " + replayClock(position.end - position.start) + " · Total " + total
+      : total;
+    seek.setAttribute("aria-valuetext", time.textContent);
+    notice.hidden = !position.afterSwipe;
+    if (position.afterSwipe || pending !== null) return;
     let last;
     const radius = Math.max(12, Math.min(sourceWidth, sourceHeight) * scale * 0.065);
     ctx.save();
@@ -404,7 +417,7 @@ function trialDetail(bundle, trial) {
     ctx.rect(left, top, sourceWidth * scale, sourceHeight * scale);
     ctx.clip();
     if (layers.heat.checked || layers.point.checked) {
-      for (const point of samples) {
+      for (const point of samples.get(position.pass) ?? []) {
         if (point.videoTimeMs > ms) break;
         if (!Number.isFinite(point.gazeXVideo) || !Number.isFinite(point.gazeYVideo)) continue;
         const x = x0 + point.gazeXVideo * vw;
@@ -452,17 +465,88 @@ function trialDetail(bundle, trial) {
     }
     ctx.restore();
   }
-  seek.addEventListener("input", () => { video.currentTime = Number(seek.value) / 1000; draw(); });
-  let frame;
-  const tick = () => { draw(); if (!video.paused) frame = requestAnimationFrame(tick); };
-  video.addEventListener("play", () => { play.textContent = "Pause"; tick(); });
-  video.addEventListener("pause", () => { play.textContent = "Play"; cancelAnimationFrame(frame); draw(); });
-  video.addEventListener("seeked", draw);
-  video.addEventListener("loadedmetadata", draw);
-  video.addEventListener("error", () => { time.textContent = "Video unavailable or unsupported by this browser"; });
+  function goTo(ms) {
+    position = replay.positionAt(ms);
+    pending = position.local / 1000;
+    applySeek();
+    draw();
+  }
+  function applySeek() {
+    if (pending === null || !Number.isFinite(video.duration)) return;
+    const target = Math.min(pending, video.duration);
+    if (Math.abs(video.currentTime - target) > 0.0005) video.currentTime = target;
+    if (!video.seeking) pending = null;
+  }
+  function stop() {
+    playing = false;
+    play.textContent = "Play";
+    video.pause();
+    cancelAnimationFrame(frame);
+  }
+  function playVideo() {
+    if (!playing || closed) return;
+    video.play().catch(error => {
+      if (closed || !playing || error.name === "AbortError") return;
+      stop();
+      time.textContent = "Video playback unavailable";
+    });
+  }
+  function finishPass() {
+    if (position.pass < replay.passCount) {
+      goTo(position.end);
+      if (video.paused) playVideo();
+    } else {
+      stop();
+      goTo(replay.duration);
+    }
+  }
+  function update() {
+    if (closed || !playing || pending !== null || video.seeking) return;
+    const elapsed = position.start + Math.round(video.currentTime * 1000);
+    if (elapsed >= position.end || video.ended) finishPass();
+    else {
+      position = replay.positionAt(elapsed);
+      draw();
+    }
+  }
+  function tick() {
+    update();
+    if (playing && !closed) frame = requestAnimationFrame(tick);
+  }
+  play.addEventListener("click", () => {
+    if (playing) {
+      update();
+      stop();
+    } else {
+      if (position.elapsed >= replay.duration) goTo(0);
+      playing = true;
+      play.textContent = "Pause";
+      playVideo();
+      frame = requestAnimationFrame(tick);
+    }
+  });
+  seek.addEventListener("input", () => {
+    const resume = playing;
+    goTo(Number(seek.value));
+    if (position.elapsed >= replay.duration) stop();
+    else if (resume && video.paused) playVideo();
+  });
+  video.addEventListener("seeked", () => {
+    if (video.seeking) return;
+    pending = null;
+    if (playing && video.paused && position.elapsed < replay.duration) playVideo();
+    draw();
+  });
+  video.addEventListener("ended", update);
+  video.addEventListener("loadedmetadata", () => { applySeek(); draw(); });
+  video.addEventListener("error", () => {
+    stop();
+    play.disabled = seek.disabled = true;
+    time.textContent = "Video unavailable or unsupported by this browser";
+  });
   const resize = new ResizeObserver(draw);
   resize.observe(stage);
-  cleanup = () => { video.pause(); resize.disconnect(); cancelAnimationFrame(frame); };
+  cleanup = () => { closed = true; stop(); resize.disconnect(); };
   draw();
 }
 

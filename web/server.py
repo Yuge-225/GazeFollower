@@ -203,7 +203,9 @@ def test_workbook(bundles):
             **test, "Participant": summary["participantCode"],
             "Completed UTC": datetime.fromtimestamp(summary["completedAtMs"] / 1000, timezone.utc),
             "experimentName": summary.get("experimentName"), "experimentVersion": summary["experimentVersion"],
-            "presentationMode": summary["presentationMode"], "trials": len(summary["trials"]),
+            "presentationMode": summary["presentationMode"],
+            "playbackMode": summary.get("playbackMode") or summary["presentationMode"],
+            "trials": len(summary["trials"]),
             "sampleCoverage": bundle.get("sampleCoverage"),
             **({"testName": research["name"]} if research.get("name") else {}),
             **({"researchNotes": research["notes"]} if research.get("notes") else {}),
@@ -478,7 +480,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         continue
                     summaries.append({
                         **identifier(summary), "experimentName": summary.get("experimentName", ""),
-                        "presentationMode": summary["presentationMode"], "completedAtMs": summary["completedAtMs"],
+                        "presentationMode": summary["presentationMode"], "playbackMode": summary.get("playbackMode"),
+                        "completedAtMs": summary["completedAtMs"],
                         "trialCount": len(summary["trials"]),
                         "validSamples": sum(trial["validSamples"] for trial in summary["trials"]),
                         "research": research,
@@ -510,6 +513,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if matches(HASH, digest):
                     return self.send_video(self.server.assets / digest)
             static = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+                      "/replay.mjs": ("replay.mjs", "text/javascript"),
                       "/style.css": ("style.css", "text/css")}
             if path in static:
                 file, kind = static[path]

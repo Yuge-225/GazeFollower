@@ -184,7 +184,7 @@ class VersionDetailActivity : VersionUiActivity() {
             "${experiment.name}\n${experiment.status} · ${experiment.videos.size} videos · $boxes boxes · $runs tests",
         )
         content.addView(navCard("Edit Setup", "Videos and labeled AOIs") { requestEdit() }, row(10))
-        content.addView(navCard("Start a New Test", "Free viewing · Ready or Scroll") { chooseMode() }, row(10))
+        content.addView(navCard("Start a New Test", "Ready · Manual Scroll · Autoplay") { chooseMode() }, row(10))
         content.addView(navCard("Test History", "$runs completed tests") {
             startActivity(Intent(this, TestHistoryActivity::class.java).putExtra(EXTRA_VERSION_ID, experiment.id))
         }, row(14))
@@ -258,7 +258,8 @@ class VersionDetailActivity : VersionUiActivity() {
             addView(title("How will videos advance?", 20f), row(12))
             listOf(
                 Triple("Ready Mode", "Tap Ready before each video.", MODE_READY),
-                Triple("Scroll Mode", "Swipe up to move to the next video.", MODE_SCROLL),
+                Triple("Manual Scroll", "Videos loop. Swipe up to advance.", MODE_MANUAL_SCROLL),
+                Triple("Autoplay", "Videos advance when they end.", MODE_AUTOPLAY),
             ).forEach { (label, description, mode) ->
                 addView(card().apply {
                     addView(action(label, primary = true) { start(mode) }.apply { textSize = 20f }, row(5, 60))
@@ -284,7 +285,7 @@ class TestHistoryActivity : VersionUiActivity() {
         runs.forEachIndexed { index, run ->
             val trials = run.optJSONArray("trials")
             val valid = (0 until (trials?.length() ?: 0)).sumOf { trials!!.getJSONObject(it).optInt("validSamples") }
-            val mode = run.optString("presentationMode", MODE_READY).displayMode()
+            val mode = run.savedPlaybackMode().displayMode()
             val number = runs.size - index
             content.addView(card().apply {
                 isClickable = true
@@ -334,7 +335,7 @@ class RunResultActivity : VersionUiActivity() {
         val valid = trialObjects.sumOf { it.optInt("validSamples") }
         val strict = trialObjects.sumOf { it.optInt("strictHits") }
         val tolerant = trialObjects.sumOf { it.optInt("tolerantHits") }
-        val mode = run.optString("presentationMode", MODE_READY).displayMode()
+        val mode = run.savedPlaybackMode().displayMode()
         val content = page("Test Result · $mode", formatDate(run.optLong("completedAtMs", run.optLong("startedAtMs"))))
         val aggregateAttention = linkedMapOf<String, Int>()
         trialObjects.forEach { trial ->
@@ -374,7 +375,7 @@ class RunResultActivity : VersionUiActivity() {
             val configuredVideo = experiment.videos.firstOrNull { it.id == savedVideoId }
                 ?: experiment.videos.getOrNull(index)
             val duration = trial.optLong("videoDurationMs", configuredVideo?.durationMs ?: 0L)
-            val cutoff = trial.optLong("presentedDurationMs", duration).takeIf { it > 0L } ?: duration
+            val viewed = trial.optLong("presentedDurationMs", duration)
             val videoName = trial.optString("videoName").takeIf { it.isNotBlank() }
                 ?: configuredVideo?.displayName
                 ?: "Video ${index + 1}"
@@ -387,13 +388,10 @@ class RunResultActivity : VersionUiActivity() {
                     addView(title("${index + 1}. $videoName", 16f), LinearLayout.LayoutParams(0, -2, 1f))
                     addView(title("›", 22f), LinearLayout.LayoutParams(-2, -2))
                 }, row(3))
-                addView(body("${mode.uppercase()} · ${formatDuration(cutoff)} / ${formatDuration(duration)}"), row(4))
-                if (mode == "Scroll Mode") {
-                    addView(body(if (trial.optBoolean("endedBySwipe", false)) {
-                        "Swiped at ${formatDuration(cutoff)} · gaze data unavailable afterward"
-                    } else {
-                        "Video completed before a swipe"
-                    }), row(5))
+                addView(body("${mode.uppercase()} · ${formatDuration(viewed)} viewed"), row(4))
+                if (trial.optBoolean("endedBySwipe", false)) {
+                    val loops = if (trial.has("completedLoops")) " · ${trial.optInt("completedLoops")} complete loops" else ""
+                    addView(body("Swiped after ${formatDuration(viewed)}$loops"), row(5))
                 }
                 val attention = trial.optJSONArray("attentionByLabel")
                 if (attention != null && attention.length() > 0) {
@@ -415,7 +413,7 @@ class RunResultActivity : VersionUiActivity() {
                 }
             }, row(9))
         }
-        content.addView(com.gazefollower.mobile.experiment.SessionUpload.button(this, sessionId), row(8, 48))
+        content.addView(com.gazefollower.mobile.experiment.SessionUpload.button(this, sessionId), row(8))
         content.addView(action("Back") { finish() }, row(height = 46))
         show(content)
     }
@@ -516,4 +514,15 @@ const val EXTRA_VIDEO_ID = "video_id"
 const val EXTRA_TRIAL_INDEX = "trial_index"
 const val MODE_READY = "READY"
 const val MODE_SCROLL = "SCROLL"
-private fun String.displayMode() = if (this == MODE_SCROLL) "Scroll Mode" else "Ready Mode"
+const val MODE_MANUAL_SCROLL = "MANUAL_SCROLL"
+const val MODE_AUTOPLAY = "AUTOPLAY"
+
+internal fun JSONObject.savedPlaybackMode(): String =
+    optString("playbackMode").ifBlank { optString("presentationMode", MODE_READY) }
+
+internal fun String.displayMode() = when (this) {
+    MODE_SCROLL -> "Scroll Mode"
+    MODE_MANUAL_SCROLL -> "Manual Scroll"
+    MODE_AUTOPLAY -> "Autoplay"
+    else -> "Ready Mode"
+}
