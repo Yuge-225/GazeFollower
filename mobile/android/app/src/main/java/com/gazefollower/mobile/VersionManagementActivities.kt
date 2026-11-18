@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -18,6 +19,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import com.gazefollower.mobile.experiment.Experiment
 import com.gazefollower.mobile.experiment.ExperimentStore
+import com.gazefollower.mobile.experiment.SessionUpload
 import org.json.JSONObject
 import java.text.DateFormat
 import java.util.Date
@@ -273,40 +275,157 @@ class VersionDetailActivity : VersionUiActivity() {
 }
 
 class TestHistoryActivity : VersionUiActivity() {
-    private lateinit var store: ExperimentStore
+    private val selected = linkedSetOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        store = ExperimentStore(this)
+        val store = ExperimentStore(this)
         val experiment = store.load(intent.getStringExtra(EXTRA_VERSION_ID))
         val runs = store.sessionSummaries(experiment.id)
-        val content = page("Test History", "Version ${experiment.version} · ${runs.size} completed tests")
-        if (runs.isEmpty()) content.addView(body("No completed tests for this version."), row(18))
-        runs.forEachIndexed { index, run ->
-            val trials = run.optJSONArray("trials")
-            val valid = (0 until (trials?.length() ?: 0)).sumOf { trials!!.getJSONObject(it).optInt("validSamples") }
-            val mode = run.savedPlaybackMode().displayMode()
-            val number = runs.size - index
-            content.addView(card().apply {
-                isClickable = true
-                isFocusable = true
-                addView(LinearLayout(this@TestHistoryActivity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(title("Test ${number.toString().padStart(3, '0')}", 17f), LinearLayout.LayoutParams(0, -2, 1f))
-                    addView(title("›", 21f), LinearLayout.LayoutParams(-2, -2))
-                }, row(3))
-                addView(body("${mode.uppercase()} · ${formatDate(run.optLong("completedAtMs", run.optLong("startedAtMs")))}"), row(3))
-                addView(body("${trials?.length() ?: 0} videos · $valid valid samples"))
-                setOnClickListener {
-                    startActivity(Intent(this@TestHistoryActivity, RunResultActivity::class.java)
-                        .putExtra(EXTRA_VERSION_ID, experiment.id)
-                        .putExtra(EXTRA_SESSION_ID, run.optString("sessionId")))
-                }
-            }, row(9))
+        val content = page("Test History", "Version ${experiment.version} · ${experiment.name}")
+        if (runs.isEmpty()) {
+            content.addView(body("No completed tests for this version."), row(18))
+            content.addView(action("Back") { finish() }, row(height = 46))
+            show(content)
+            return
         }
-        content.addView(action("Back") { finish() }, row(height = 46))
-        show(content)
+
+        selected.addAll(savedInstanceState?.getStringArrayList("selectedTests").orEmpty())
+        val labels = linkedMapOf<String, String>()
+        val checks = linkedMapOf<String, CheckBox>()
+        val statuses = linkedMapOf<String, TextView>()
+        var uploading = false
+        val selectionText = body("").apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        val feedback = body("").apply {
+            visibility = View.GONE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            visibility = View.GONE
+        }
+        val upload = action("Upload selected tests", primary = true) {}
+        val toggleAll = action("Select all") {}
+        fun refreshSelection() {
+            selectionText.text = "${selected.size} of ${runs.size} tests selected"
+            toggleAll.text = if (selected.size == checks.size) "Clear selection" else "Select all"
+            toggleAll.isEnabled = !uploading
+            upload.isEnabled = !uploading && selected.isNotEmpty()
+            checks.values.forEach { it.isEnabled = !uploading }
+        }
+
+        content.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(title("Completed tests (${runs.size})", 17f), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(toggleAll, LinearLayout.LayoutParams(-2, dp(48)))
+        }, row(8))
+        runs.forEachIndexed { index, run ->
+            val id = run.getString("sessionId")
+            val name = "Test ${(runs.size - index).toString().padStart(3, '0')}"
+            labels[id] = name
+            val participant = run.optString("participantCode").ifBlank { "No participant code" }
+            val trials = run.optJSONArray("trials")
+            val count = trials?.length() ?: 0
+            val valid = (0 until count).sumOf { trials!!.getJSONObject(it).optInt("validSamples") }
+            val check = CheckBox(this).apply {
+                contentDescription = "Select $name, $participant"
+                buttonTintList = ColorStateList.valueOf(getColor(R.color.foreground))
+                isChecked = id in selected
+                minimumWidth = dp(48)
+                minimumHeight = dp(48)
+            }
+            checks[id] = check
+            val status = body("").apply { visibility = View.GONE }
+            statuses[id] = status
+            val details = navCard(name, "$participant · ${run.savedPlaybackMode().displayMode()}") {
+                startActivity(Intent(this@TestHistoryActivity, RunResultActivity::class.java)
+                    .putExtra(EXTRA_VERSION_ID, experiment.id)
+                    .putExtra(EXTRA_SESSION_ID, id))
+            }.apply {
+                setPadding(dp(4), dp(10), dp(8), dp(10))
+                background = null
+                addView(body(formatDate(run.optLong("completedAtMs", run.optLong("startedAtMs")))), row(4))
+                addView(body("$count ${if (count == 1) "video" else "videos"} · $valid valid samples"))
+                addView(status, row())
+            }
+            content.addView(card().apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), 0, dp(4), 0)
+                addView(check, LinearLayout.LayoutParams(dp(48), dp(48)))
+                addView(details, LinearLayout.LayoutParams(0, -2, 1f))
+            }, row(9))
+            check.setOnCheckedChangeListener { _, checked ->
+                if (checked) selected.add(id) else selected.remove(id)
+                refreshSelection()
+            }
+        }
+        selected.retainAll(checks.keys)
+        toggleAll.setOnClickListener {
+            val select = selected.size < checks.size
+            checks.values.forEach { it.isChecked = select }
+        }
+        upload.setOnClickListener {
+            val selection = labels.filterKeys { it in selected }
+            SessionUpload.uploadSelected(this, selection,
+                onProgress = { stage, percent ->
+                    if (!isFinishing && !isDestroyed) {
+                        uploading = true
+                        feedback.visibility = View.VISIBLE
+                        feedback.text = if (percent == null) stage else "$stage · $percent%"
+                        progress.visibility = View.VISIBLE
+                        progress.isIndeterminate = percent == null
+                        if (percent != null) progress.progress = percent
+                        refreshSelection()
+                    }
+                },
+                onComplete = { results, pairingExpired ->
+                    if (!isFinishing && !isDestroyed) {
+                        uploading = false
+                        progress.visibility = View.GONE
+                        var uploadedCount = 0
+                        var existingCount = 0
+                        for ((id, result) in results) {
+                            val status = statuses.getValue(id)
+                            status.visibility = View.VISIBLE
+                            status.text = result.getOrElse { it.message ?: "Upload failed." }
+                            if (result.isSuccess) {
+                                if (result.getOrThrow() == "Already Uploaded") existingCount++ else uploadedCount++
+                                checks.getValue(id).isChecked = false
+                            }
+                        }
+                        val failed = results.size - uploadedCount - existingCount
+                        feedback.visibility = View.VISIBLE
+                        feedback.text = if (pairingExpired) "Pair again to retry the remaining tests."
+                            else "$uploadedCount uploaded · $existingCount already on website · $failed failed"
+                        refreshSelection()
+                    }
+                })
+        }
+        refreshSelection()
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(getColor(R.color.background))
+            addView(ScrollView(this@TestHistoryActivity).apply {
+                addView(content, ViewGroup.LayoutParams(-1, -2))
+            }, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(LinearLayout(this@TestHistoryActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(20), dp(8), dp(20), dp(10))
+                setBackgroundColor(getColor(R.color.card_background))
+                addView(selectionText, row(3))
+                addView(feedback, row(3))
+                addView(progress, row(3))
+                addView(upload, row(height = 48))
+            }, row())
+        })
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putStringArrayList("selectedTests", ArrayList(selected))
+        super.onSaveInstanceState(outState)
     }
 }
 

@@ -68,42 +68,87 @@ object SessionUpload {
         dialog.show()
     }
 
+    private data class SavedTest(val id: String, val directory: File, val summary: JSONObject)
+
     private fun configure(button: Button, indicator: ProgressBar, sessionId: String) {
-        if (sessionId in uploading) return
         val context = button.context
-        val directory = ExperimentStore(context).sessionDirectory(sessionId)
-        val summary = runCatching {
-            JSONObject(directory.resolve("session_summary.json").readText())
-        }.getOrElse {
-            toast(context, "Saved test data is unavailable.")
+        uploadSelected(context, mapOf(sessionId to "this test"),
+            onProgress = { stage, percent ->
+                button.isEnabled = false
+                button.text = if (percent == null) stage else "$stage · $percent%"
+                indicator.visibility = View.VISIBLE
+                indicator.isIndeterminate = percent == null
+                if (percent != null) indicator.progress = percent
+            },
+            onComplete = { results, pairingExpired ->
+                indicator.visibility = View.GONE
+                button.isEnabled = true
+                val result = results.getValue(sessionId)
+                button.text = when {
+                    pairingExpired -> "Pair and upload"
+                    result.isFailure -> "Retry Upload"
+                    else -> result.getOrThrow()
+                }
+                result.exceptionOrNull()?.let { toast(context, it.message ?: "Upload failed. Tap Retry Upload.") }
+            })
+    }
+
+    internal fun uploadSelected(
+        context: Context,
+        selection: Map<String, String>,
+        onProgress: (String, Int?) -> Unit,
+        onComplete: (Map<String, Result<String>>, Boolean) -> Unit,
+    ) {
+        if (selection.isEmpty()) return
+        if (selection.keys.any(uploading::contains)) {
+            toast(context, "A selected test is already uploading. Try again when it finishes.")
             return
         }
-
-        fun uploadTest(authorization: UploadAuthorization) {
-            val existingCode = summary.optString("participantCode")
-            if (PARTICIPANT_CODE.matches(existingCode)) {
-                startUpload(button, indicator, sessionId, authorization, directory, summary)
-                return
-            }
-            val participant = input(context, "Participant code")
-            val dialog = AlertDialog.Builder(context).setTitle("Participant code")
-                .setMessage("Add a participant code for this older test.")
-                .setView(fields(context, participant)).setNegativeButton("Cancel", null)
-                .setPositiveButton("Upload", null).show()
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val code = participant.text.toString().trim()
-                if (!PARTICIPANT_CODE.matches(code)) {
-                    participant.error = "Enter a participant code."
-                    return@setOnClickListener
+        val store = ExperimentStore(context)
+        val results = linkedMapOf<String, Result<String>>()
+        val tests = selection.keys.mapNotNull { id ->
+            val directory = store.sessionDirectory(id)
+            runCatching { SavedTest(id, directory, JSONObject(directory.resolve("session_summary.json").readText())) }
+                .getOrElse {
+                    results[id] = Result.failure(IOException("Saved test data is unavailable."))
+                    null
                 }
-                dialog.dismiss()
-                summary.put("participantCode", code)
-                startUpload(button, indicator, sessionId, authorization, directory, summary)
-            }
         }
-
-        val authorization = UploadAuthorizationStore(context).load()
-        if (authorization == null) pair(context, ::uploadTest) else uploadTest(authorization)
+        if (tests.isEmpty()) {
+            onComplete(results, false)
+            return
+        }
+        val authorizationStore = UploadAuthorizationStore(context)
+        fun begin(authorization: UploadAuthorization) {
+            if (!hasConnection(context, authorization.address)) return
+            val missingCodes = tests.filterNot { PARTICIPANT_CODE.matches(it.summary.optString("participantCode")) }
+            fun collectCode(index: Int) {
+                if (index == missingCodes.size) {
+                    startUploads(context, tests, authorization, results, onProgress, onComplete)
+                    return
+                }
+                val test = missingCodes[index]
+                val participant = input(context, "Participant code")
+                val dialog = AlertDialog.Builder(context).setTitle("Participant code")
+                    .setMessage("Add a participant code for ${selection.getValue(test.id)}.")
+                    .setView(fields(context, participant)).setNegativeButton("Cancel", null)
+                    .setPositiveButton(if (index + 1 < missingCodes.size) "Continue" else "Upload", null)
+                    .show()
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val code = participant.text.toString().trim()
+                    if (!PARTICIPANT_CODE.matches(code)) {
+                        participant.error = "Enter a participant code."
+                        return@setOnClickListener
+                    }
+                    dialog.dismiss()
+                    test.summary.put("participantCode", code)
+                    collectCode(index + 1)
+                }
+            }
+            collectCode(0)
+        }
+        val authorization = authorizationStore.load()
+        if (authorization == null) pair(context, ::begin) else begin(authorization)
     }
 
     private fun pair(context: Context, onPaired: ((UploadAuthorization) -> Unit)? = null) {
@@ -154,44 +199,47 @@ object SessionUpload {
         }
     }
 
-    private fun startUpload(
-        button: Button,
-        indicator: ProgressBar,
-        sessionId: String,
+    private fun startUploads(
+        context: Context,
+        tests: List<SavedTest>,
         authorization: UploadAuthorization,
-        directory: File,
-        summary: JSONObject,
+        results: MutableMap<String, Result<String>>,
+        onProgress: (String, Int?) -> Unit,
+        onComplete: (Map<String, Result<String>>, Boolean) -> Unit,
     ) {
-        val context = button.context
-        if (!hasConnection(context, authorization.address) || !uploading.add(sessionId)) return
-        button.isEnabled = false
-        button.text = "Waiting to upload…"
-        indicator.isIndeterminate = true
-        indicator.visibility = View.VISIBLE
+        if (!hasConnection(context, authorization.address)) return
+        val ids = tests.map { it.id }
+        if (ids.any(uploading::contains)) {
+            toast(context, "A selected test is already uploading. Try again when it finishes.")
+            return
+        }
+        uploading.addAll(ids)
+        onProgress("Waiting to upload…", null)
         executor.execute {
-            val result = runCatching {
-                upload(authorization, directory, summary) { stage, percent ->
-                    mainThread.post {
-                        button.text = if (percent == null) stage else "$stage · $percent%"
-                        indicator.isIndeterminate = percent == null
-                        if (percent != null) indicator.progress = percent
+            var pairingExpired = false
+            for ((index, test) in tests.withIndex()) {
+                if (pairingExpired) {
+                    results[test.id] = Result.failure(IOException("Pair the phone again to upload this test."))
+                    continue
+                }
+                val prefix = if (tests.size > 1) "Test ${index + 1} of ${tests.size} · " else ""
+                val result = runCatching {
+                    upload(authorization, test.directory, test.summary) { stage, percent ->
+                        mainThread.post { onProgress(prefix + stage, percent) }
                     }
                 }
+                pairingExpired = result.exceptionOrNull() is AuthorizationRejected
+                results[test.id] = if (pairingExpired) {
+                    Result.failure(IOException("This pairing has expired or was reset. Tap to pair again."))
+                } else result
             }
             mainThread.post {
-                uploading.remove(sessionId)
-                indicator.visibility = View.GONE
-                button.isEnabled = true
-                val error = result.exceptionOrNull()
-                if (error is AuthorizationRejected) {
+                uploading.removeAll(ids.toSet())
+                if (pairingExpired) {
                     val store = UploadAuthorizationStore(context)
                     if (store.load() == authorization) store.forget()
-                    button.text = "Pair and upload"
-                    toast(context, "This pairing has expired or was reset. Tap to pair again.")
-                } else {
-                    button.text = result.getOrElse { "Retry Upload" }
-                    error?.let { toast(context, it.message ?: "Upload failed. Tap Retry Upload.") }
                 }
+                onComplete(results, pairingExpired)
             }
         }
     }
