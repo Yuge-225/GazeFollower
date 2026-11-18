@@ -145,8 +145,9 @@ python3 web/server.py
 
 1. Open [the local dashboard](http://127.0.0.1:8765/) and sign in.
 2. For local Android testing, connect the phone and run `adb reverse tcp:8765 tcp:8765`.
-3. In a completed test or **Test History**, tap **Upload to Website**. Enter `http://127.0.0.1:8765` and the website password. Upload starts only when you tap **Upload**. The app checks which tests and videos are already on the server before sending data.
-4. Open a participant in the dashboard. Replay an individual video with its heatmap, select specific videos for export, or download all tests for that participant. Use **Edit test** to name a test and add notes. Deleted tests can be restored.
+3. In the dashboard, open **Pair a phone** and generate a code. In Android's **Upload Settings**, enter `http://127.0.0.1:8765` and that code to pair the phone.
+4. In a completed test or **Test History**, tap **Upload to Website**. The app checks which tests and videos are already on the server before sending data.
+5. Open a participant in the dashboard. Replay an individual video with its heatmap, select specific videos for export, or download all tests for that participant. Use **Edit test** to name a test and add notes. Deleted tests can be restored.
 
 If the page shows an older server message after a code update, stop the running server with **Ctrl+C**, run `python3 web/server.py` again, and refresh the page.
 

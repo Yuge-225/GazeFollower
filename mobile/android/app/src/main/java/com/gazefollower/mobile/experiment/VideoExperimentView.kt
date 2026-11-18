@@ -24,6 +24,9 @@ import android.widget.VideoView
 import com.gazefollower.mobile.R
 import com.gazefollower.mobile.MODE_READY
 import com.gazefollower.mobile.MODE_SCROLL
+import com.gazefollower.mobile.MODE_MANUAL_SCROLL
+import com.gazefollower.mobile.MODE_AUTOPLAY
+import com.gazefollower.mobile.displayMode
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -36,6 +39,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
     private data class Sample(
         val videoId: String,
         val positionMs: Long,
+        val trialTimeMs: Long,
+        val playbackPass: Int,
         val x: Float,
         val y: Float,
         val videoX: Float,
@@ -55,6 +60,10 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         var tolerantHits: Int = 0,
         var distanceSum: Float = 0f,
         var presentedDurationMs: Long = 0L,
+        var completedLoops: Int = 0,
+        var completedPlaybackMs: Long = 0L,
+        var seekingToStart: Boolean = false,
+        var finalVideoTimeMs: Long = 0L,
         var endedBySwipe: Boolean = false,
         var playbackFailed: Boolean = false,
         var geometry: JSONObject? = null,
@@ -75,8 +84,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
     private var sessionId = ""
     private var presentationMode = MODE_READY
     private var startedAtMs = 0L
-    private var detailVideoView: VideoView? = null
-    private var detailTicker: Runnable? = null
+    private var detailReplay: TrialReplay? = null
 
     init {
         setBackgroundColor(context.getColor(R.color.background))
@@ -87,7 +95,10 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         this.experiment = experiment
         this.participantCode = participantCode
         this.validation = validation
-        presentationMode = if (mode == MODE_SCROLL) MODE_SCROLL else MODE_READY
+        presentationMode = when (mode) {
+            MODE_AUTOPLAY, MODE_MANUAL_SCROLL, MODE_SCROLL -> mode
+            else -> MODE_READY
+        }
         trialIndex = 0
         results.clear()
         samples.clear()
@@ -106,7 +117,9 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             val player = videoView ?: return@post
             val result = results.lastOrNull() ?: return@post
             result.capturedGazeSamples += 1
-            val position = player.currentPosition.toLong()
+            val position = player.currentPosition.toLong().coerceAtLeast(0L)
+            val trialTime = result.completedPlaybackMs + position
+            val pass = result.completedLoops + 1
             val bounds = videoContentBounds(video)
             val gazeX = normalizedX * width
             val gazeY = normalizedY * height
@@ -115,6 +128,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 put("videoId", video.id)
                 put("trialIndex", results.size)
                 put("videoTimeMs", position)
+                put("trialTimeMs", trialTime)
+                put("playbackPass", pass)
                 if (gazeX.isFinite() && gazeY.isFinite()) {
                     put("gazeXPx", gazeX.toDouble())
                     put("gazeYPx", gazeY.toDouble())
@@ -124,7 +139,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                 put("scored", false)
             }
             capturedSamples.put(captured)
-            if (position < SCORING_DELAY_MS) {
+            if (trialTime < SCORING_DELAY_MS) {
                 captured.put("excludedReason", "START_DELAY")
                 return@post
             }
@@ -167,7 +182,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             if (tolerantHit) result.tolerantHits += 1
             result.distanceSum += distance
             result.attentionCounts[assignedLabelId] = (result.attentionCounts[assignedLabelId] ?: 0) + 1
-            samples += Sample(video.id, position, gazeX, gazeY, videoX, videoY, strictHit, tolerantHit, distance, matchedAois, assignedLabelId)
+            samples += Sample(video.id, position, trialTime, pass, gazeX, gazeY, videoX, videoY, strictHit, tolerantHit, distance, matchedAois, assignedLabelId)
             captured.put("scored", true)
             captured.put("strictHit", strictHit)
             captured.put("tolerantHit", tolerantHit)
@@ -183,7 +198,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         removeAllViews()
         val exp = experiment ?: return
         val video = exp.videos.getOrNull(trialIndex) ?: return showDashboard()
-        if (presentationMode == MODE_SCROLL && trialIndex > 0) {
+        if (presentationMode == MODE_AUTOPLAY || (presentationMode != MODE_READY && trialIndex > 0)) {
             playVideo(video)
             return
         }
@@ -191,11 +206,15 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(24), dp(24), dp(24))
-            addView(label(if (presentationMode == MODE_SCROLL) "SCROLL MODE" else "VIDEO ${trialIndex + 1} OF ${exp.videos.size}", 16f, false), params(18))
-            addView(label(if (presentationMode == MODE_SCROLL) "Swipe up for the next video" else "Ready for the next video?", 25f, true), params(10))
-            addView(label(if (presentationMode == MODE_SCROLL) "The current video stops scoring as soon as the swipe is accepted." else video.displayName, 15f, false), params(30))
-            addView(button(if (presentationMode == MODE_SCROLL) "Start Scroll Test" else "Ready") {
-                if (presentationMode == MODE_SCROLL) playVideo(video) else startCountdown(video)
+            addView(label(if (presentationMode != MODE_READY) presentationMode.displayMode().uppercase() else "VIDEO ${trialIndex + 1} OF ${exp.videos.size}", 16f, false), params(18))
+            addView(label(if (presentationMode != MODE_READY) "Swipe up for the next video" else "Ready for the next video?", 25f, true), params(10))
+            addView(label(when (presentationMode) {
+                MODE_MANUAL_SCROLL -> "Each video loops until you swipe up."
+                MODE_SCROLL -> "Swipe up to advance before a video ends."
+                else -> video.displayName
+            }, 15f, false), params(30))
+            addView(button(if (presentationMode != MODE_READY) "Start Manual Scroll" else "Ready") {
+                if (presentationMode != MODE_READY) playVideo(video) else startCountdown(video)
             }, params(12, 64))
             addView(button("Exit experiment") { onExit?.invoke() }, params(height = 52))
         }
@@ -221,12 +240,28 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             setOnPreparedListener { mediaPlayer ->
                 if (videoView !== this) return@setOnPreparedListener
                 mediaPlayer.isLooping = false
+                mediaPlayer.setOnSeekCompleteListener {
+                    if (videoView === this && result.seekingToStart && !result.endedBySwipe) {
+                        result.seekingToStart = false
+                        start()
+                        collecting = true
+                    }
+                }
                 result.geometry = captureGeometry(videoContentBounds(video))
                 collecting = true
                 start()
             }
             setOnCompletionListener {
-                if (videoView === this && collecting) finishCurrentVideo(swiped = false)
+                if (videoView !== this || !collecting) return@setOnCompletionListener
+                if (presentationMode == MODE_MANUAL_SCROLL) {
+                    collecting = false
+                    result.completedLoops += 1
+                    result.completedPlaybackMs += duration.toLong().takeIf { it > 0 } ?: video.durationMs
+                    result.seekingToStart = true
+                    seekTo(0)
+                } else {
+                    finishCurrentVideo(swiped = false)
+                }
             }
             setOnErrorListener { _, _, _ ->
                 if (videoView === this && !result.endedBySwipe) {
@@ -242,13 +277,19 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             addView(player, LayoutParams(-1, -1))
         }
         videoStage = stage
-        addView(stage, LayoutParams(-2, -2, Gravity.CENTER))
-        if (presentationMode == MODE_SCROLL) installSwipeGesture(stage)
+        val viewport = FrameLayout(context).apply {
+            addView(stage, LayoutParams(-2, -2, Gravity.CENTER))
+        }
+        addView(viewport, LayoutParams(-1, -1))
+        if (presentationMode == MODE_MANUAL_SCROLL || presentationMode == MODE_SCROLL) {
+            installSwipeGesture(viewport, stage)
+        }
     }
 
-    private fun installSwipeGesture(stage: View) {
+    private fun installSwipeGesture(viewport: View, stage: View) {
         var downY = 0f
-        stage.setOnTouchListener { view, event ->
+        viewport.setOnTouchListener { _, event ->
+            val view = stage
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downY = event.rawY
@@ -260,15 +301,19 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (!collecting) return@setOnTouchListener true
+                    val result = results.lastOrNull() ?: return@setOnTouchListener true
+                    if ((!collecting && !result.seekingToStart) || result.endedBySwipe) return@setOnTouchListener true
                     val delta = event.rawY - downY
                     if (delta < -dp(72)) {
                         collecting = false
-                        results.lastOrNull()?.endedBySwipe = true
-                        val cutoffAtSwipe = videoView?.currentPosition?.toLong()?.coerceAtLeast(0L)
-                        videoView?.pause()
+                        result.endedBySwipe = true
+                        val player = videoView
+                        val cutoffAtSwipe = if (result.seekingToStart) 0L else player?.currentPosition?.toLong()?.coerceAtLeast(0L)
+                        player?.pause()
                         view.animate().translationY(-height.toFloat()).alpha(0f).setDuration(180L)
-                            .withEndAction { finishCurrentVideo(swiped = true, cutoffMs = cutoffAtSwipe) }.start()
+                            .withEndAction {
+                                if (videoView === player) finishCurrentVideo(swiped = true, cutoffMs = cutoffAtSwipe)
+                            }.start()
                     } else {
                         view.animate().translationY(0f).alpha(1f).setDuration(140L).start()
                     }
@@ -287,12 +332,15 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         val player = videoView
         val result = results.lastOrNull()
         collecting = false
-        result?.presentedDurationMs = if (swiped || result?.playbackFailed == true) {
-            cutoffMs ?: player?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L
-        } else {
-            result?.video?.durationMs ?: 0L
+        if (result != null) {
+            result.finalVideoTimeMs = if (swiped || result.playbackFailed) {
+                cutoffMs ?: player?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L
+            } else {
+                result.video.durationMs
+            }
+            result.presentedDurationMs = result.completedPlaybackMs + result.finalVideoTimeMs
+            result.endedBySwipe = swiped
         }
-        result?.endedBySwipe = swiped
         player?.stopPlayback()
         videoView = null
         videoStage = null
@@ -319,7 +367,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(18), dp(20), dp(24))
             addView(label("Test Result", 26f, true).apply { gravity = Gravity.START }, params(3))
-            addView(label("${if (presentationMode == MODE_SCROLL) "SCROLL MODE" else "READY MODE"} · ${results.size} videos · $totalValid valid samples", 14f, false).apply { gravity = Gravity.START }, params(16))
+            addView(label("${presentationMode.displayMode().uppercase()} · ${results.size} videos · $totalValid valid samples", 14f, false).apply { gravity = Gravity.START }, params(16))
             addView(label("Attention", 20f, true).apply { gravity = Gravity.START }, params(8))
             totalAttention.entries.sortedByDescending { it.value }.forEach { (id, count) ->
                 addView(attentionBar(labelName(id), count, totalValid), params(7))
@@ -343,7 +391,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             results.forEachIndexed { index, result ->
                 addView(resultCard(index, result), params(9))
             }
-            addView(SessionUpload.button(context, sessionId), params(8, 48))
+            addView(SessionUpload.button(context, sessionId), params(8))
             addView(button("Return to Home") { onExit?.invoke() }, params(8, 46))
         }
         addView(ScrollView(context).apply { addView(content) }, LayoutParams(-1, -1))
@@ -365,11 +413,14 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             addView(label("${index + 1}. ${result.video.displayName}", 16f, true).apply { gravity = Gravity.START }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(label("›", 22f, true), LinearLayout.LayoutParams(-2, -2))
         }, params(4))
-        addView(label("${if (presentationMode == MODE_SCROLL) "SCROLL" else "READY"} · ${result.validSamples} valid samples", 13f, false).apply { gravity = Gravity.START }, params(5))
-        if (presentationMode == MODE_SCROLL) {
+        addView(label("${presentationMode.displayMode().uppercase()} · ${result.validSamples} valid samples", 13f, false).apply { gravity = Gravity.START }, params(5))
+        if (presentationMode == MODE_SCROLL || presentationMode == MODE_MANUAL_SCROLL) {
             addView(label(
-                if (result.endedBySwipe) "Swiped at ${formatTime(result.presentedDurationMs)} · later gaze data unavailable"
-                else "Video completed before a swipe",
+                when {
+                    result.playbackFailed -> "Video playback failed"
+                    result.endedBySwipe -> "Swiped after ${formatTime(result.presentedDurationMs)} · ${result.completedLoops} complete loops"
+                    else -> "Video completed before a swipe"
+                },
                 13f,
                 false,
             ).apply { gravity = Gravity.START }, params(8))
@@ -398,14 +449,16 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         removeAllViews()
         val result = results.getOrNull(index) ?: return showDashboard(save = false)
         val video = result.video
-        val videoSamples = samples.filter { it.videoId == video.id }
+        val pointsByPass = samples.asSequence().filter { it.videoId == video.id }
+            .groupBy({ it.playbackPass }, { HeatmapPoint(it.positionMs, it.videoX, it.videoY) })
+        val timeline = ReplayTimeline(
+            video.durationMs, result.completedLoops, result.finalVideoTimeMs,
+            result.presentedDurationMs, presentationMode == MODE_MANUAL_SCROLL, result.endedBySwipe,
+        )
         val heatmap = GazeHeatmapView(context).apply {
-            setPoints(videoSamples.map { HeatmapPoint(it.positionMs, it.videoX, it.videoY) })
             setLabelColors(experiment?.labels?.associate { it.id to it.colorArgb }.orEmpty())
             setLabelNames(experiment?.labels?.associate { it.id to it.name }.orEmpty())
         }
-        val cutoff = result.presentedDurationMs.takeIf { it > 0L } ?: video.durationMs
-        val showUnavailableAfterCutoff = presentationMode == MODE_SCROLL && result.endedBySwipe
         val unavailableOverlay = label("GAZE DATA NOT AVAILABLE\nAFTER SWIPE", 18f, true).apply {
             gravity = Gravity.CENTER
             setBackgroundColor(0xD905080D.toInt())
@@ -413,7 +466,6 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             visibility = GONE
         }
         val player = VideoView(context).apply { setVideoPath(video.localPath) }
-        detailVideoView = player
         val stage = AspectFitFrameLayout(context, video.width, video.height).apply {
             setBackgroundColor(0xFF05080D.toInt())
             addView(player, LayoutParams(-1, -1))
@@ -424,44 +476,9 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             setBackgroundColor(0xFF05080D.toInt())
             addView(stage, LayoutParams(-2, -2, Gravity.CENTER))
         }
-        val replayTime = label("00:00.000 / ${formatTime(video.durationMs)}", 14f, false)
-        val replayProgress = SeekBar(context).apply {
-            max = video.durationMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
-        }
-        lateinit var playPause: Button
-        var dragging = false
-        fun updateReplay(position: Long) {
-            replayTime.text = "${formatTime(position)} / ${formatTime(video.durationMs)}"
-            heatmap.setPlaybackState(position.coerceAtMost(cutoff), video.activeAoisAt(position.coerceAtMost(cutoff)))
-            unavailableOverlay.visibility = if (showUnavailableAfterCutoff && position > cutoff) VISIBLE else GONE
-        }
-        playPause = button("Pause replay") {
-            if (player.isPlaying) {
-                player.pause()
-                playPause.text = "Resume replay"
-            } else {
-                player.start()
-                playPause.text = "Pause replay"
-            }
-        }
-        replayProgress.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onStartTrackingTouch(seekBar: SeekBar) {
-                dragging = true
-                player.pause()
-            }
-
-            override fun onProgressChanged(seekBar: SeekBar, value: Int, fromUser: Boolean) {
-                if (!fromUser) return
-                player.seekTo(value)
-                updateReplay(value.toLong())
-            }
-
-            override fun onStopTrackingTouch(seekBar: SeekBar) {
-                dragging = false
-                player.start()
-                playPause.text = "Pause replay"
-            }
-        })
+        val replayTime = label("", 14f, false)
+        val replayProgress = SeekBar(context)
+        val playPause = button("Pause replay") {}
 
         val meanDistance = if (result.validSamples == 0) 0f else result.distanceSum / result.validSamples
         val excludedSamples = (result.capturedGazeSamples - result.validSamples).coerceAtLeast(0)
@@ -469,10 +486,7 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(10), dp(18), dp(20))
             addView(label(video.displayName, 19f, true).apply { gravity = Gravity.START }, params(3))
-            addView(label("${if (presentationMode == MODE_SCROLL) "SCROLL MODE" else "READY MODE"}", 13f, false).apply { gravity = Gravity.START }, params(6))
-            if (showUnavailableAfterCutoff) {
-                addView(label("Swiped at ${formatTime(cutoff)} · gaze data after this point was not collected or scored.", 14f, false), params(10))
-            }
+            addView(label(presentationMode.displayMode(), 13f, false).apply { gravity = Gravity.START }, params(6))
             addView(replayTime, params(2))
             addView(replayProgress, params(4, 42))
             addView(playPause, params(10, 44))
@@ -506,20 +520,10 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         }
         addView(root, LayoutParams(-1, -1))
 
-        player.setOnPreparedListener { mediaPlayer ->
-            mediaPlayer.isLooping = true
-            player.start()
-        }
-        detailTicker = object : Runnable {
-            override fun run() {
-                if (!dragging) {
-                    val position = player.currentPosition.coerceAtLeast(0)
-                    replayProgress.progress = position.coerceAtMost(replayProgress.max)
-                    updateReplay(position.toLong())
-                }
-                player.postDelayed(this, 33L)
-            }
-        }.also { player.post(it) }
+        detailReplay = TrialReplay(
+            player, timeline, replayProgress, replayTime, playPause,
+            heatmap, unavailableOverlay, video, pointsByPass,
+        ).also { it.start() }
     }
 
     private fun metric(name: String, value: String, explanation: String): View = LinearLayout(context).apply {
@@ -551,13 +555,13 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
     }
 
     private fun dwellMs(videoId: String, labelId: String): Long {
-        val ordered = samples.filter { it.videoId == videoId }.sortedBy { it.positionMs }
+        val ordered = samples.filter { it.videoId == videoId }.sortedBy { it.trialTimeMs }
         var total = 0L
         for (index in 0 until ordered.lastIndex) {
             val current = ordered[index]
             val next = ordered[index + 1]
-            if (current.assignedLabelId == labelId) {
-                total += (next.positionMs - current.positionMs).coerceIn(0L, MAX_DWELL_GAP_MS)
+            if (current.assignedLabelId == labelId && current.playbackPass == next.playbackPass) {
+                total += (next.trialTimeMs - current.trialTimeMs).coerceIn(0L, MAX_DWELL_GAP_MS)
             }
         }
         return total
@@ -566,10 +570,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
     private fun formatDwell(ms: Long): String = "%.2f s dwell".format(ms / 1000.0)
 
     private fun stopDetailReplay() {
-        detailTicker?.let { ticker -> detailVideoView?.removeCallbacks(ticker) }
-        detailTicker = null
-        detailVideoView?.stopPlayback()
-        detailVideoView = null
+        detailReplay?.stop()
+        detailReplay = null
     }
 
     @Suppress("DEPRECATION")
@@ -604,7 +606,10 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
             put("experimentId", exp.id)
             put("experimentName", exp.name)
             put("experimentVersion", exp.version)
-            put("presentationMode", presentationMode)
+            // The deployed server still accepts only its original mode values.
+            put("presentationMode", if (presentationMode == MODE_MANUAL_SCROLL) MODE_SCROLL else
+                if (presentationMode == MODE_AUTOPLAY) MODE_READY else presentationMode)
+            put("playbackMode", presentationMode)
             put("startedAtMs", startedAtMs)
             put("completedAtMs", System.currentTimeMillis())
             put("experimentSnapshot", ExperimentStore(context).snapshot(exp))
@@ -620,6 +625,8 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
                         put("sourceVideoFrames", result.video.sourceFrameCount)
                         put("videoDurationMs", result.video.durationMs)
                         put("presentedDurationMs", result.presentedDurationMs)
+                        put("completedLoops", result.completedLoops)
+                        put("finalVideoTimeMs", result.finalVideoTimeMs)
                         put("endedBySwipe", result.endedBySwipe)
                         put("playbackFailed", result.playbackFailed)
                         put("capturedGazeSamples", result.capturedGazeSamples)
@@ -649,9 +656,9 @@ class VideoExperimentView(context: Context) : FrameLayout(context) {
         }
         File(directory, "captured_samples.json").writeText(capturedSamples.toString())
         File(directory, "gaze_samples.csv").bufferedWriter().use { writer ->
-            writer.appendLine("video_id,video_time_ms,gaze_x_px,gaze_y_px,video_x_normalized,video_y_normalized,strict_hit,tolerant_hit,distance_px,matched_aois,assigned_label_id")
+            writer.appendLine("video_id,video_time_ms,gaze_x_px,gaze_y_px,video_x_normalized,video_y_normalized,strict_hit,tolerant_hit,distance_px,matched_aois,assigned_label_id,trial_time_ms,playback_pass")
             samples.forEach { sample ->
-                writer.appendLine("${sample.videoId},${sample.positionMs},${sample.x},${sample.y},${sample.videoX},${sample.videoY},${sample.strictHit},${sample.tolerantHit},${sample.distancePx},\"${sample.matchedAois}\",${sample.assignedLabelId}")
+                writer.appendLine("${sample.videoId},${sample.positionMs},${sample.x},${sample.y},${sample.videoX},${sample.videoY},${sample.strictHit},${sample.tolerantHit},${sample.distancePx},\"${sample.matchedAois}\",${sample.assignedLabelId},${sample.trialTimeMs},${sample.playbackPass}")
             }
         }
         File(directory, "session_summary.json").writeText(summary.toString(2))

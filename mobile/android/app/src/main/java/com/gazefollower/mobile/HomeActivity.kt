@@ -10,6 +10,7 @@ import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import com.gazefollower.mobile.experiment.Experiment
 import com.gazefollower.mobile.experiment.ExperimentStore
+import com.gazefollower.mobile.experiment.SessionUpload
 
 class HomeActivity : VersionUiActivity() {
     private lateinit var store: ExperimentStore
@@ -46,7 +47,8 @@ class HomeActivity : VersionUiActivity() {
             }, matchWrap(bottom = 12))
             addView(taskCard("Manage Versions", "Videos, labels, annotations, and test history") {
                 startActivity(Intent(this@HomeActivity, ExperimentVersionsActivity::class.java))
-            }, matchWrap(bottom = 24))
+            }, matchWrap(bottom = 12))
+            addView(action("Upload Settings") { SessionUpload.settings(this@HomeActivity) }, matchWrap(bottom = 24, height = 48))
             addView(summary, matchWrap())
         }
         setContentView(homeScreen)

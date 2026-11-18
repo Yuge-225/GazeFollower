@@ -3,6 +3,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -10,9 +11,10 @@ import zipfile
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 from xml.etree import ElementTree
 
-from server import DashboardServer
+from server import DashboardServer, DevicePairing, device_signing_key
 
 
 SESSION = "2f050fb5-2a95-460b-a091-21a224bf9935"
@@ -83,6 +85,50 @@ class DashboardIntegrationTest(unittest.TestCase):
         self.assertEqual(200, status)
         return json.loads(data)
 
+    def test_phone_pairing_grants_upload_only_and_code_is_single_use(self):
+        create = "/api/pairing/codes"
+        redeem = "/api/pairing/redeem"
+        preflight = {"sessionId": SESSION, "assetHashes": [HASH]}
+        cookie = {"Cookie": "gaze_dashboard=" + self.server.browser_token.decode()}
+        self.assertEqual(401, self.request(create, "POST", auth=False)[0])
+        self.assertEqual(401, self.request(create, "POST", headers=cookie, auth=False)[0])
+        browser = {**cookie, "Sec-Fetch-Site": "same-origin"}
+        status, _, data = self.request(create, "POST", headers=browser, auth=False)
+        self.assertEqual(201, status)
+        code = json.loads(data)["code"]
+        self.assertEqual(400, self.request(redeem, "POST", {"code": "unknown"}, auth=False)[0])
+        status, _, data = self.request(redeem, "POST", {"code": code.lower()}, auth=False)
+        self.assertEqual(200, status)
+        phone = {"Authorization": "Bearer " + json.loads(data)["uploadToken"]}
+        self.assertEqual(400, self.request(redeem, "POST", {"code": code}, auth=False)[0])
+        self.assertEqual(200, self.request("/api/check", "POST", preflight, phone, auth=False)[0])
+        self.assertEqual(201, self.request("/api/assets/" + HASH, "PUT", VIDEO, phone, auth=False)[0])
+        self.assertEqual(201, self.request("/api/sessions", "POST", fixture(), phone, auth=False)[0])
+        self.assertEqual({"alreadyUploaded": True},
+                         json.loads(self.request("/api/sessions", "POST", fixture(), phone, auth=False)[2]))
+        for path in ("/api/sessions", "/media/" + HASH, f"/api/sessions/{SESSION}/export.xlsx"):
+            self.assertEqual(401, self.request(path, headers=phone, auth=False)[0])
+        self.assertEqual(401, self.request(create, "POST", headers=phone, auth=False)[0])
+        self.assertEqual(401, self.request(f"/api/sessions/{SESSION}/manage", "POST", {}, phone, auth=False)[0])
+
+    def test_pairing_credential_survives_instance_restart_with_configured_key(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as restarted:
+            with patch.dict(os.environ, {"GAZEFOLLOWER_DEVICE_KEY": "test-only-instance-key"}):
+                issuer = DevicePairing(device_signing_key(Path(first), "test-password"))
+                after_restart = DevicePairing(device_signing_key(Path(restarted), "test-password"))
+                after_rotation = DevicePairing(device_signing_key(Path(restarted), "changed-password"))
+            unused_code = issuer.create_code()
+            token = issuer.redeem(issuer.create_code())
+            auth = b"Bearer " + token.encode()
+            self.assertTrue(after_restart.allows_upload(auth))
+            self.assertFalse(after_rotation.allows_upload(auth))
+            self.assertFalse(after_restart.allows_upload(auth + b"0"))
+            self.assertIsNone(after_restart.redeem(unused_code))
+            with patch("server.time.monotonic", return_value=float("inf")):
+                self.assertIsNone(issuer.redeem(unused_code))
+            with patch("server.time.time", return_value=float("inf")):
+                self.assertFalse(after_restart.allows_upload(auth))
+
     def test_manual_upload_deduplicates_and_exports_replay_data(self):
         self.assertEqual(401, self.request("/api/sessions", auth=False)[0])
         self.assertEqual(200, self.request("/")[0])
@@ -119,6 +165,23 @@ class DashboardIntegrationTest(unittest.TestCase):
             self.assertEqual("START_DELAY", rows[0]["excludedReason"])
             self.assertEqual(SESSION + "-1", rows[1]["trialId"])
             self.assertEqual("P014", rows[1]["participantCode"])
+
+    def test_multi_round_replay_fields_reach_the_dashboard(self):
+        body = fixture()
+        body["summary"]["playbackMode"] = "MANUAL_SCROLL"
+        body["summary"]["trials"][0].update(
+            completedLoops=2, finalVideoTimeMs=1600, presentedDurationMs=7600)
+        body["samples"][1].update(playbackPass=3, trialTimeMs=6750)
+        self.assertEqual(201, self.request("/api/assets/" + HASH, "PUT", VIDEO)[0])
+        self.assertEqual(201, self.request("/api/sessions", "POST", body)[0])
+        listing = json.loads(self.request("/api/sessions")[2])
+        self.assertEqual("MANUAL_SCROLL", listing[0]["playbackMode"])
+        bundle = json.loads(self.request("/api/sessions/" + SESSION)[2])
+        self.assertEqual(2, bundle["summary"]["trials"][0]["completedLoops"])
+        self.assertEqual(3, bundle["samples"][1]["playbackPass"])
+        status, headers, _ = self.request("/replay.mjs")
+        self.assertEqual(200, status)
+        self.assertEqual("text/javascript", headers.get_content_type())
 
     def test_historical_csv_labels_coverage_and_leaves_unknown_geometry_blank(self):
         body = fixture()

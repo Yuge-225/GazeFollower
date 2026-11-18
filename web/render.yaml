@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: gazefollower-staging
+    runtime: python
+    plan: free
+    rootDir: web
+    buildCommand: python3 -m compileall -q server.py spreadsheet.py
+    startCommand: python3 server.py --host 0.0.0.0 --port "$PORT" --data-dir .data
+    healthCheckPath: /
+    autoDeployTrigger: off
+    envVars:
+      - key: GAZEFOLLOWER_WEB_PASSWORD
+        sync: false
+      - key: GAZEFOLLOWER_DEVICE_KEY
+        generateValue: true

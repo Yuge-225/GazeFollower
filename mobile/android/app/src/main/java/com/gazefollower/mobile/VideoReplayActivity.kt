@@ -4,22 +4,22 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.TextView
 import android.widget.VideoView
 import com.gazefollower.mobile.experiment.AspectFitFrameLayout
 import com.gazefollower.mobile.experiment.ExperimentStore
 import com.gazefollower.mobile.experiment.GazeHeatmapView
+import com.gazefollower.mobile.experiment.ReplayTimeline
+import com.gazefollower.mobile.experiment.TrialReplay
+import org.json.JSONArray
 import com.gazefollower.mobile.experiment.HeatmapPoint
 import org.json.JSONObject
 
 class VideoReplayActivity : VersionUiActivity() {
-    private var player: VideoView? = null
-    private var ticker: Runnable? = null
+    private var replay: TrialReplay? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,12 +50,20 @@ class VideoReplayActivity : VersionUiActivity() {
             show(page("Replay", "The saved video configuration is unavailable."))
             return
         }
-        val cutoff = trial.optLong("presentedDurationMs", video.durationMs).coerceIn(0L, video.durationMs)
-        val endedBySwipe = summary.optString("presentationMode") == MODE_SCROLL && trial.optBoolean("endedBySwipe", false)
-        val replayEnd = if (endedBySwipe) video.durationMs else cutoff
-        val points = readPoints(directory.resolve("gaze_samples.csv").readText(), videoId)
+        val mode = summary.savedPlaybackMode()
+        val viewed = trial.optLong("presentedDurationMs", video.durationMs)
+        val timeline = ReplayTimeline(
+            video.durationMs, trial.optInt("completedLoops"),
+            trial.optLong("finalVideoTimeMs", viewed), viewed,
+            mode == MODE_MANUAL_SCROLL, trial.optBoolean("endedBySwipe"),
+        )
+        val captured = directory.resolve("captured_samples.json")
+        val points = if (captured.isFile) {
+            readPasses(JSONArray(captured.readText()), trial.optInt("trialIndex", trialObjects.indexOf(trial) + 1), videoId)
+        } else {
+            mapOf(1 to readPoints(directory.resolve("gaze_samples.csv").readText(), videoId))
+        }
         val heatmap = GazeHeatmapView(this).apply {
-            setPoints(points)
             setLabelColors(experiment.labels.associate { it.id to it.colorArgb })
             setLabelNames(experiment.labels.associate { it.id to it.name })
         }
@@ -66,7 +74,6 @@ class VideoReplayActivity : VersionUiActivity() {
             visibility = View.GONE
         }
         val videoView = VideoView(this).apply { setVideoPath(video.localPath) }
-        player = videoView
         val stage = AspectFitFrameLayout(this, video.width, video.height).apply {
             setBackgroundColor(0xFF05080D.toInt())
             addView(videoView, FrameLayout.LayoutParams(-1, -1))
@@ -77,46 +84,15 @@ class VideoReplayActivity : VersionUiActivity() {
             setBackgroundColor(0xFF05080D.toInt())
             addView(stage, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         }
-        val time = body("00:00.000 / ${formatMs(replayEnd)}").apply { gravity = Gravity.CENTER }
-        val progress = SeekBar(this).apply { max = replayEnd.coerceAtLeast(1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() }
-        var dragging = false
-        lateinit var playPause: Button
-        playPause = action("Pause Replay") {
-            if (videoView.isPlaying) {
-                videoView.pause()
-                playPause.text = "Resume Replay"
-            } else {
-                if (videoView.currentPosition >= replayEnd) videoView.seekTo(0)
-                videoView.start()
-                playPause.text = "Pause Replay"
-            }
-        }
-        progress.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onStartTrackingTouch(seekBar: SeekBar) {
-                dragging = true
-                videoView.pause()
-            }
-            override fun onProgressChanged(seekBar: SeekBar, value: Int, fromUser: Boolean) {
-                if (!fromUser) return
-                videoView.seekTo(value)
-                updateReplay(value.toLong(), cutoff, replayEnd, endedBySwipe, video, heatmap, unavailableOverlay, time)
-            }
-            override fun onStopTrackingTouch(seekBar: SeekBar) {
-                dragging = false
-                videoView.start()
-                playPause.text = "Pause Replay"
-            }
-        })
+        val time = body("").apply { gravity = Gravity.CENTER }
+        val progress = SeekBar(this)
+        val playPause = action("Pause Replay") {}
 
         val metrics = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(10), dp(18), dp(20))
             addView(title(video.displayName, 19f), row(3))
-            addView(body(if (endedBySwipe) {
-                "Scroll Mode · Swiped at ${formatMs(cutoff)}. Replay continues, but gaze data is unavailable after the swipe."
-            } else {
-                "${if (summary.optString("presentationMode") == MODE_SCROLL) "Scroll Mode" else "Ready Mode"} · Full scored presentation"
-            }), row(10))
+            addView(body(mode.displayMode()), row(10))
             addView(time, row())
             addView(progress, row(5, 42))
             addView(playPause, row(10, 44))
@@ -133,7 +109,7 @@ class VideoReplayActivity : VersionUiActivity() {
             val technical = LinearLayout(this@VideoReplayActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 visibility = View.GONE
-                addView(body("Presented · ${formatMs(cutoff)} / ${formatMs(video.durationMs)}"), row(3))
+                addView(body("Total viewed · ${formatMs(viewed)}"), row(3))
                 addView(body("Captured · ${trial.optInt("capturedGazeSamples")} · Valid · ${trial.optInt("validSamples")}"), row(3))
                 addView(body("Inside exact AOIs · ${fraction(trial.optInt("strictHits"), trial.optInt("validSamples"))}"), row(3))
                 addView(body("Inside tolerant AOIs · ${fraction(trial.optInt("tolerantHits"), trial.optInt("validSamples"))}"), row(3))
@@ -156,43 +132,21 @@ class VideoReplayActivity : VersionUiActivity() {
             addView(ScrollView(this@VideoReplayActivity).apply { addView(metrics) }, LinearLayout.LayoutParams(-1, 0, 0.42f))
         })
 
-        videoView.setOnPreparedListener {
-            it.isLooping = false
-            videoView.start()
-        }
-        ticker = object : Runnable {
-            override fun run() {
-                if (!dragging) {
-                    val position = videoView.currentPosition.toLong().coerceAtLeast(0L)
-                    if (position >= replayEnd) {
-                        videoView.pause()
-                        videoView.seekTo(replayEnd.toInt())
-                        playPause.text = "Replay Again"
-                    }
-                    val shown = position.coerceAtMost(replayEnd)
-                    progress.progress = shown.toInt()
-                    updateReplay(shown, cutoff, replayEnd, endedBySwipe, video, heatmap, unavailableOverlay, time)
-                }
-                videoView.postDelayed(this, 33L)
-            }
-        }.also(videoView::post)
+        replay = TrialReplay(videoView, timeline, progress, time, playPause, heatmap, unavailableOverlay, video, points)
+            .also { it.start() }
     }
 
-    private fun updateReplay(
-        position: Long,
-        cutoff: Long,
-        replayEnd: Long,
-        endedBySwipe: Boolean,
-        video: com.gazefollower.mobile.experiment.ExperimentVideo,
-        heatmap: GazeHeatmapView,
-        unavailableOverlay: TextView,
-        time: TextView,
-    ) {
-        time.text = "${formatMs(position)} / ${formatMs(replayEnd)}"
-        val scoredPosition = position.coerceAtMost(cutoff)
-        heatmap.setPlaybackState(scoredPosition, video.activeAoisAt(scoredPosition))
-        unavailableOverlay.visibility = if (endedBySwipe && position > cutoff) View.VISIBLE else View.GONE
-    }
+    private fun readPasses(samples: JSONArray, trialIndex: Int, videoId: String): Map<Int, List<HeatmapPoint>> =
+        (0 until samples.length()).asSequence().mapNotNull { index ->
+            val sample = samples.optJSONObject(index) ?: return@mapNotNull null
+            if (sample.optString("videoId") != videoId || !sample.optBoolean("scored")) return@mapNotNull null
+            if (sample.has("trialIndex") && sample.optInt("trialIndex") != trialIndex) return@mapNotNull null
+            val x = sample.optDouble("gazeXVideo")
+            val y = sample.optDouble("gazeYVideo")
+            val timestamp = sample.optLong("videoTimeMs", -1)
+            if (!x.isFinite() || !y.isFinite() || timestamp < 0) return@mapNotNull null
+            sample.optInt("playbackPass", 1) to HeatmapPoint(timestamp, x.toFloat(), y.toFloat())
+        }.groupBy({ it.first }, { it.second })
 
     private fun readPoints(csv: String, videoId: String): List<HeatmapPoint> = csv.lineSequence()
         .drop(1)
@@ -213,10 +167,8 @@ class VideoReplayActivity : VersionUiActivity() {
     }
 
     override fun onDestroy() {
-        ticker?.let { player?.removeCallbacks(it) }
-        ticker = null
-        player?.stopPlayback()
-        player = null
+        replay?.stop()
+        replay = null
         super.onDestroy()
     }
 }

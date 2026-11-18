@@ -190,7 +190,7 @@ files/sessions/<session-id>/
 
 Experiment versions, imported videos, reusable labels, annotations, and results are stored in app-private storage. They survive USB disconnection and normal app restarts, but are removed if the app is uninstalled or its storage is cleared.
 
-Tap **Upload to Website** from the results screen or a saved test in **Test History**. Enter the dashboard URL and website password. The app checks for existing data before uploading. Researchers can replay videos and export Excel or JSON from the [web dashboard](../../web/README.md).
+Sign in to the web dashboard and use **Pair a phone** to generate a code. In Android's **Upload Settings**, enter the dashboard URL and the code. After pairing, tap **Upload to Website** in a completed test or **Test History**. The app checks for existing data before uploading. Researchers can replay videos and export Excel or JSON from the [web dashboard](../../web/README.md).
 
 ## Known Limitations
 
