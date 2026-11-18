@@ -41,6 +41,26 @@ The server limits each stimulus to 512 MiB and each session request to 32 MiB.
 Use a persistent data directory and restrict access to the research team.
 MP4 with H.264 video is a practical stimulus format for browser replay.
 
+## Host a test site on Render
+
+Use the [free web service](https://render.com/docs/free) with synthetic tests.
+Render provides an HTTPS address. Sessions and stimulus files on the free
+service can disappear when it restarts, redeploys, or spins down.
+
+1. In the [Render Dashboard](https://dashboard.render.com/), choose **New → Blueprint**,
+   connect the GazeFollower repository, and select the branch with this configuration.
+2. Set **Blueprint Path** to `web/render.yaml`. Set
+   `GAZEFOLLOWER_WEB_PASSWORD` to a new password in Render and deploy.
+3. Open the assigned `https://<service-name>.onrender.com` URL on your
+   computer. Sign in with the staging password. In **Upload to Website** on
+   Android, enter that same HTTPS URL and password. With the phone online,
+   upload a synthetic session and verify replay, export, and **Already Uploaded**.
+
+Plan a separate persistent deployment for participant data. On Render, a
+[paid web service with a persistent disk](https://render.com/docs/disks)
+can mount storage under `/var/data`; point `--data-dir` at that mount.
+Verify the hosted upload with videos of the expected size before use.
+
 ## Exports
 
 Click a participant code in Sessions. Check individual videos, select a whole

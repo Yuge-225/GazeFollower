@@ -595,14 +595,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1", help="Address to bind (default: loopback).")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--data-dir", type=Path, default=Path("web/.data"))
     args = parser.parse_args()
     password = os.environ.get("GAZEFOLLOWER_WEB_PASSWORD")
     if not password:
         parser.error("Set GAZEFOLLOWER_WEB_PASSWORD before starting the website.")
-    with DashboardServer(("127.0.0.1", args.port), args.data_dir, password) as server:
-        print(f"GazeFollower dashboard: http://127.0.0.1:{server.server_port}", flush=True)
+    with DashboardServer((args.host, args.port), args.data_dir, password) as server:
+        print(f"GazeFollower dashboard: http://{args.host}:{server.server_port}", flush=True)
         server.serve_forever()
 
 
