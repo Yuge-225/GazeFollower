@@ -28,15 +28,19 @@ Install the Android debug APK. Connect the phone over USB and run:
 adb reverse tcp:8765 tcp:8765
 ```
 
-Finish a test or open a previous test under **Test History**. Tap **Upload to
-Website**, enter `http://127.0.0.1:8765` and the website password, and tap
-**Upload**. Older tests also ask for a participant code. Tap again to verify the
-**Already Uploaded** result. Use the Sessions page to open the test, download
-Excel or JSON, and replay an individual trial.
+Sign in on the computer and choose **Pair a phone → Generate code**. On the
+phone, open **Upload Settings → Pair phone**, enter `http://127.0.0.1:8765`
+and the code, then tap **Pair phone**. Each code works once and expires after
+10 minutes.
+
+Finish a test or open a previous one under **Test History** and tap **Upload
+to Website**. Older tests without a participant code ask for one. Tap again to
+verify the **Already Uploaded** result. Use the Sessions page to open the
+test, download Excel or JSON, and replay an individual trial.
 
 For Wi-Fi use, run the dashboard behind a private HTTPS reverse proxy that
-forwards to loopback and sets `X-Forwarded-Proto: https`. Enter the HTTPS site URL on the phone, with the app and
-browser using the same credentials. Forward upload bodies and Range requests.
+forwards to loopback and sets `X-Forwarded-Proto: https`. Enter the HTTPS site
+URL when pairing the phone. Forward upload bodies and Range requests.
 The server limits each stimulus to 512 MiB and each session request to 32 MiB.
 Use a persistent data directory and restrict access to the research team.
 MP4 with H.264 video is a practical stimulus format for browser replay.
@@ -52,9 +56,15 @@ service can disappear when it restarts, redeploys, or spins down.
 2. Set **Blueprint Path** to `web/render.yaml`. Set
    `GAZEFOLLOWER_WEB_PASSWORD` to a new password in Render and deploy.
 3. Open the assigned `https://<service-name>.onrender.com` URL on your
-   computer. Sign in with the staging password. In **Upload to Website** on
-   Android, enter that same HTTPS URL and password. With the phone online,
-   upload a synthetic session and verify replay, export, and **Already Uploaded**.
+   computer. Sign in with the staging password, generate a pairing code, and
+   pair Android with that HTTPS URL. Upload a synthetic session and verify
+   replay, export, and **Already Uploaded**.
+
+The Blueprint generates a server key to keep phone authorization valid after
+restarts. For other hosts, set `GAZEFOLLOWER_DEVICE_KEY` to an independent
+random secret or keep the generated `.device-key` in the persistent data
+directory. Phone authorization expires after one year. Changing the website
+password or server key invalidates existing pairings.
 
 Plan a separate persistent deployment for participant data. On Render, a
 [paid web service with a persistent disk](https://render.com/docs/disks)

@@ -3,6 +3,7 @@ package com.gazefollower.mobile
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.gazefollower.mobile.experiment.SessionUpload
+import com.gazefollower.mobile.experiment.UploadAuthorizationStore
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assume.assumeTrue
@@ -18,9 +19,13 @@ class SessionUploadDeviceTest {
     fun uploadsSyntheticSessionOnce() {
         val arguments = InstrumentationRegistry.getArguments()
         val url = arguments.getString("dashboardUrl")
-        val password = arguments.getString("dashboardPassword")
-        assumeTrue("Requires a disposable dashboard and USB reverse tunnel", url != null && password != null)
+        val pairingCode = arguments.getString("dashboardPairingCode")
+        assumeTrue("Requires a disposable dashboard and USB reverse tunnel", url != null && pairingCode != null)
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = UploadAuthorizationStore(context)
+        assumeTrue("Requires a device without an existing pairing", store.load() == null)
+        val settings = context.getSharedPreferences("research_website", 0)
+        val previousAddress = settings.getString("address", null)
         val directory = File(context.cacheDir, "upload-test-${UUID.randomUUID()}").apply { mkdir() }
         try {
             // The browser test separately uses an actual synthetic video and checks decoding.
@@ -42,10 +47,15 @@ class SessionUploadDeviceTest {
                 getJSONObject("experimentSnapshot").getJSONArray("videos").getJSONObject(0)
                     .put("localPath", video.absolutePath)
             }
-            assertEquals("Uploaded", SessionUpload.upload(URI(url!!), password!!, directory, summary()))
+            val authorization = SessionUpload.redeem(URI(url!!), pairingCode!!)
+            store.save(authorization)
+            assertEquals(authorization, UploadAuthorizationStore(context).load())
+            assertEquals("Uploaded", SessionUpload.upload(store.load()!!, directory, summary()))
             video.delete()
-            assertEquals("Already Uploaded", SessionUpload.upload(URI(url), password, directory, summary()))
+            assertEquals("Already Uploaded", SessionUpload.upload(store.load()!!, directory, summary()))
         } finally {
+            store.forget()
+            settings.edit().putString("address", previousAddress).commit()
             directory.deleteRecursively()
         }
     }

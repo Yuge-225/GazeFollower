@@ -11,3 +11,5 @@ services:
     envVars:
       - key: GAZEFOLLOWER_WEB_PASSWORD
         sync: false
+      - key: GAZEFOLLOWER_DEVICE_KEY
+        generateValue: true

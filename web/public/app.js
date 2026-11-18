@@ -223,6 +223,28 @@ function participantDetail(data, code, selections = new Set()) {
   syncSelection();
 }
 
+function pairingPanel() {
+  const output = el("p", {role: "status"});
+  const generate = el("button", {type: "button", class: "secondary"}, "Generate code");
+  generate.addEventListener("click", async () => {
+    generate.disabled = true;
+    output.textContent = "Generating a code…";
+    try {
+      const response = await fetch("/api/pairing/codes", {method: "POST"});
+      if (response.status === 401) throw new Error("Your sign-in expired. Reload the page and sign in again.");
+      if (!response.ok) throw new Error("Could not generate a pairing code. Try again.");
+      const {code, expiresInSeconds} = await response.json();
+      output.replaceChildren(el("strong", {}, code), " · Expires in " + expiresInSeconds / 60 + " minutes");
+    } catch (error) {
+      output.textContent = error.message;
+    } finally {
+      generate.disabled = false;
+    }
+  });
+  return el("details", {class: "panel"}, el("summary", {}, "Pair a phone"),
+    el("p", {}, "Open Upload Settings on the phone and enter the code. Each code works once."), generate, output);
+}
+
 function sessions(data) {
   const participant = el("input", {type: "search", placeholder: "e.g. P014"});
   const version = el("select", {}, el("option", {value: ""}, "All versions"));
@@ -255,7 +277,7 @@ function sessions(data) {
       el("label", {}, "Completed on", date),
       ...(data.some(test => test.research?.deleted) ? [el("label", {}, "Show deleted", showDeleted)] : []),
       el("button", {class: "secondary", onclick: navigate}, "Refresh")),
-    output);
+    output, pairingPanel());
 }
 
 function testDetail(bundle) {

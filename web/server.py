@@ -12,6 +12,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import time
 from threading import Lock
 import zipfile
 from datetime import datetime, timezone
@@ -29,6 +30,10 @@ BOX_EDGES = ("left", "top", "right", "bottom")
 PUBLIC = Path(__file__).parent / "public"
 SESSION_LIMIT = 32 * 1024 * 1024
 VIDEO_LIMIT = 512 * 1024 * 1024
+PAIRING_SECONDS = 600
+DEVICE_SECONDS = 365 * 24 * 60 * 60
+PAIRING_CODE = re.compile(r"[A-F0-9]{16}")
+DEVICE_TOKEN = re.compile(rb"gf1\.([0-9]{1,12})\.([a-f0-9]{32})\.([a-f0-9]{64})")
 
 
 def items(value, key):
@@ -289,6 +294,62 @@ def store_once(destination, temporary):
         return False
 
 
+def device_signing_key(root, password):
+    configured_key = os.environ.get("GAZEFOLLOWER_DEVICE_KEY")
+    if configured_key:
+        key = configured_key.encode()
+    else:
+        path = root / ".device-key"
+        if not path.exists():
+            with tempfile.NamedTemporaryFile(dir=root) as temporary:
+                temporary.write(secrets.token_bytes(32))
+                temporary.flush()
+                store_once(path, temporary.name)
+        key = path.read_bytes()
+    return hmac.digest(key, password.encode(), "sha256")
+
+
+class DevicePairing:
+    def __init__(self, key):
+        self.key = key
+        self.codes = {}
+        self.lock = Lock()
+
+    def create_code(self):
+        now = time.monotonic()
+        code = secrets.token_hex(8).upper()
+        with self.lock:
+            self.codes = {value: expiry for value, expiry in self.codes.items() if expiry > now}
+            if len(self.codes) >= 64:
+                del self.codes[next(iter(self.codes))]
+            self.codes[code] = now + PAIRING_SECONDS
+        return "-".join(code[index:index + 4] for index in range(0, len(code), 4))
+
+    def redeem(self, code):
+        if not isinstance(code, str):
+            return None
+        code = code.strip().replace("-", "").upper()
+        if not PAIRING_CODE.fullmatch(code):
+            return None
+        with self.lock:
+            expiry = self.codes.pop(code, 0)
+        if expiry <= time.monotonic():
+            return None
+        value = f"gf1.{int(time.time()) + DEVICE_SECONDS}.{secrets.token_hex(16)}".encode()
+        signature = hmac.digest(self.key, value, "sha256").hex().encode()
+        return (value + b"." + signature).decode()
+
+    def allows_upload(self, credential):
+        if not credential.startswith(b"Bearer "):
+            return False
+        token = credential[7:]
+        match = DEVICE_TOKEN.fullmatch(token)
+        if not match or int(match[1]) <= time.time():
+            return False
+        signature = hmac.digest(self.key, token.rsplit(b".", 1)[0], "sha256").hex().encode()
+        return hmac.compare_digest(signature, match[3])
+
+
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -299,6 +360,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.sessions.mkdir(parents=True, exist_ok=True)
         self.credential = b"Basic " + base64.b64encode(f"researcher:{password}".encode())
         self.browser_token = secrets.token_urlsafe(32).encode()
+        self.pairing = DevicePairing(device_signing_key(root, password))
         self.session_edits = Lock()
         super().__init__(address, DashboardHandler)
 
@@ -334,6 +396,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         path = url.path
         management = re.fullmatch(r"/api/sessions/([^/]+)/manage", path) if method == "POST" else None
+        create_pairing = method == "POST" and path == "/api/pairing/codes"
+        upload_request = (
+            (method == "POST" and path in ("/api/check", "/api/sessions"))
+            or (method == "PUT" and path.startswith("/api/assets/"))
+        )
         try:
             if method != "GET" and self.headers.get("Sec-Fetch-Site") == "cross-site":
                 return self.send_json(403, {"error": "Cross-site writes are disabled."})
@@ -346,9 +413,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
                 cookie = "gaze_dashboard=" + self.server.browser_token.decode() + "; Path=/; HttpOnly; SameSite=Strict" + secure
                 return self.respond(303, b"", "text/plain", {"Location": "/", "Set-Cookie": cookie})
+            if method == "POST" and path == "/api/pairing/redeem":
+                body = json.loads(self.rfile.read(self.length(1024)))
+                token = self.server.pairing.redeem(body.get("code"))
+                if not token:
+                    return self.send_json(400, {"error": "Pairing code is invalid, expired, or already used. Generate a new code."})
+                return self.send_json(200, {"uploadToken": token})
             credential = self.headers.get("Authorization", "").encode()
             signed_in = hmac.compare_digest(self.server.credential, credential)
-            if (method == "GET" or (management and self.dashboard_write_is_same_origin())) and not signed_in:
+            if upload_request and not signed_in:
+                signed_in = self.server.pairing.allows_upload(credential)
+            browser_write = (management or create_pairing) and self.dashboard_write_is_same_origin()
+            if (method == "GET" or browser_write) and not signed_in:
                 cookie = SimpleCookie()
                 try:
                     cookie.load(self.headers.get("Cookie", ""))
@@ -362,6 +438,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     signed_in = True
             if not signed_in:
                 return self.send_json(401, {"error": "Sign in as researcher."})
+            if create_pairing:
+                return self.send_json(201, {"code": self.server.pairing.create_code(), "expiresInSeconds": PAIRING_SECONDS})
             if management:
                 return self.manage_test(self.session_path(management[1]), self.read_json())
             if method == "POST" and path == "/api/check":
